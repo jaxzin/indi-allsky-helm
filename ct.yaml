@@ -2,6 +2,6 @@ chart-dirs: [charts]
 target-branch: main
 validate-maintainers: false
 # Pre-1.0 iteration: the chart version stays put between releases and the
-# release tag (Task A10) drives real versioning, so per-PR version bumps are
-# deliberately not required yet.
+# release tag (Task A10, #10) drives real versioning, so per-PR version bumps
+# are deliberately not required yet.
 check-version-increment: false

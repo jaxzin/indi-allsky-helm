@@ -1,5 +1,5 @@
 # Throwaway dev-only credentials so CI can render the chart. Required-credential
-# guards land with the env Secret templates (Task A5); templating with these
+# guards land with the env Secret templates (Task A5, #4); templating with these
 # dummies now means that change cannot silently break CI, and CI never needs a
 # real secret. chart-testing also picks this file up automatically
 # (ci/*-values.yaml) when linting. Excluded from the packaged chart

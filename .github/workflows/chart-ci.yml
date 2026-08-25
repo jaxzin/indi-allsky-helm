@@ -7,6 +7,7 @@ on:
       - "e2e/**"
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
+      - "UPSTREAM_VERSION"
   push:
     branches: [main]
     paths:
@@ -14,6 +15,7 @@ on:
       - "e2e/**"
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
+      - "UPSTREAM_VERSION"
 
 permissions:
   contents: read
@@ -25,10 +27,12 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # UPSTREAM_VERSION is the single source of truth for the upstream build
       # pin; Chart.yaml appVersion is the deliberately-synced chart-facing copy
@@ -66,9 +70,9 @@ jobs:
         run: ct lint --config ct.yaml
 
       # ci/ci-values.yaml carries throwaway dev credentials so this render keeps
-      # passing once required-credential guards land (Task A5) — CI never holds
-      # real secrets. kubeconform is digest-pinned (tags are mutable) and reads
-      # the manifests on stdin.
+      # passing once required-credential guards land (Task A5, #4) — CI never
+      # holds real secrets. kubeconform is digest-pinned (tags are mutable) and
+      # reads the manifests on stdin.
       - name: kubeconform
         run: |
           helm template charts/indi-allsky \
@@ -76,4 +80,4 @@ jobs:
             docker run -i ghcr.io/yannh/kubeconform@sha256:6b90a5f23d846140ce0194fe050b1995e546eba938f3a6bf10c039dd5e24588f \
             -strict -summary -kubernetes-version 1.26.0
 
-  # e2e job (kind + INDI simulator smoke test) is added in Task A9.
+  # e2e job (kind + INDI simulator smoke test) is added in Task A9 (#8).
