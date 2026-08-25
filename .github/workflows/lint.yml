@@ -1,0 +1,72 @@
+name: lint
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Wrapper pins the rhysd/actionlint container by digest in its
+      # settings.json (1.7.12 at this release).
+      - uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4 # v0.1.13
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Find shell scripts
+        id: files
+        run: |
+          if find images -name '*.sh' -type f 2>/dev/null | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No shell scripts yet (they arrive with the daemon/web images); skipping."
+          fi
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        if: steps.files.outputs.found == 'true'
+        with:
+          scandir: ./images
+
+  hadolint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Find Dockerfiles
+        id: files
+        run: |
+          if find images -name 'Dockerfile*' -type f 2>/dev/null | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No Dockerfiles yet (they arrive with the daemon/web images); skipping."
+          fi
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        if: steps.files.outputs.found == 'true'
+        with:
+          dockerfile: images/**/Dockerfile*
+          recursive: true
+
+  # Secret-free PR-side validation of the upstream pin gate and the bake
+  # graph: no registry login, no push, nothing built.
+  bake-print:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run the pin gate and validate the bake graph
+        run: make bake-print

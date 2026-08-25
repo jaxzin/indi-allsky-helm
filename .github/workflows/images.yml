@@ -1,0 +1,112 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/**"
+      - "patches/**"
+      - "UPSTREAM_VERSION"
+      - "UPSTREAM_SHA"
+      - "Makefile"
+      - ".github/workflows/images.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/jaxzin
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout pinned upstream and apply patches
+        run: make upstream
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          # Pin buildx itself — the action installs floating latest otherwise.
+          version: v0.36.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bake and push by digest
+        env:
+          ARCH: ${{ matrix.arch }}
+          # Per-target registry cache refs — scheme and rationale live in
+          # images/docker-bake.hcl. Reads always on; writes main-only.
+          CACHE_REGISTRY: ${{ env.REGISTRY }}/indi-allsky-cache
+          CACHE_ARCH: ${{ matrix.arch }}
+          CACHE_WRITE: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          docker buildx bake -f images/docker-bake.hcl \
+            --set "*.platform=linux/${ARCH}" \
+            --set "*.output=type=image,push-by-digest=true,push=true,name-canonical=true" \
+            --metadata-file "bake-meta-${ARCH}.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bake-meta-${{ matrix.arch }}
+          path: bake-meta-${{ matrix.arch }}.json
+
+  merge:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bake-meta-*
+          merge-multiple: true
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests
+        run: |
+          UPSTREAM_TAG="$(cat UPSTREAM_VERSION)"
+          # Bake metadata keys are target names; images are named after them.
+          # daemon and web do not exist yet — skip any target absent from the
+          # metadata rather than failing.
+          for image in indiserver daemon web; do
+            AMD=$(jq -r --arg t "$image" '.[$t]["containerimage.digest"] // empty' bake-meta-amd64.json)
+            ARM=$(jq -r --arg t "$image" '.[$t]["containerimage.digest"] // empty' bake-meta-arm64.json)
+            if [ -z "$AMD" ] || [ -z "$ARM" ]; then
+              echo "Skipping ${image}: target not present in bake metadata"
+              continue
+            fi
+            docker buildx imagetools create \
+              -t "${REGISTRY}/indi-allsky-${image}:main" \
+              -t "${REGISTRY}/indi-allsky-${image}:${UPSTREAM_TAG}" \
+              "${REGISTRY}/indi-allsky-${image}@${AMD}" \
+              "${REGISTRY}/indi-allsky-${image}@${ARM}"
+          done
