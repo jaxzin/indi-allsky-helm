@@ -20,7 +20,14 @@ upstream:
 bake-print: upstream
 	docker buildx bake -f images/docker-bake.hcl --print
 
+# Strict: a lint failure fails the target. The `ls -1` lines print what is
+# about to be linted, so a glob that silently matched nothing is visible in the
+# output — and, because `ls` fails on a non-matching glob, also fatal.
+# hadolint runs from the same pinned image digest CI uses, so a clean local run
+# means a clean CI run; that is why this target needs docker.
 lint:
-	hadolint images/*/Dockerfile || true  # becomes strict in A3 when Dockerfiles exist
-	shellcheck images/*/*.sh 2>/dev/null || true
+	@echo "hadolint:"; ls -1 images/*/Dockerfile
+	docker run --rm -v "$$(pwd):/w" -w /w ghcr.io/hadolint/hadolint:v2.15.1-debian@sha256:9a3944b7fddcb947d1ffd90829ac1a6e5c30479223358f249d8b96c7d0019e27 hadolint images/*/Dockerfile
+	@echo "shellcheck:"; ls -1 images/*/*.sh
+	shellcheck images/*/*.sh
 	actionlint
