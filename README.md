@@ -7,9 +7,46 @@ this repo only packages it for Kubernetes.
 
 ## Status
 
-Images first, chart under construction. The container image build pipeline is
-in place; the Helm chart is not yet published or installable. Watch the
+Images first, chart under construction. All three container images build and
+publish; the Helm chart is not yet published or installable. Watch the
 releases for the first chart version.
+
+## Images
+
+Three multi-arch images, all running as uid/gid 10001 with `sudo` purged
+rather than merely disarmed.
+
+| Image | Purpose | Entrypoint |
+| --- | --- | --- |
+| `ghcr.io/jaxzin/indi-allsky-indiserver` | INDI server and camera drivers, run as a sidecar next to capture | upstream `start_indiserver.sh` |
+| `ghcr.io/jaxzin/indi-allsky-daemon` | the capture and processing daemon | `entrypoint-daemon.sh` — renders the config, waits for the schema and initial configuration, then execs `allsky.py` |
+| `ghcr.io/jaxzin/indi-allsky-web` | the gunicorn web UI, and the migration tooling the chart runs as an initContainer | `entrypoint-web.sh`; `migrate.sh` for migrations, bootstrap and seeding |
+
+The `daemon` and `web` images are overlays on upstream's own container images:
+they replace the entrypoints with ones suited to Kubernetes — no fixed startup
+sleeps, no `sudo chown`, no migrations during web startup — and drive auth and
+database settings from the environment.
+
+Smoke tests:
+
+```sh
+# web: the venv interpreter and the checkout as cwd are both part of the
+# contract — a bare `--entrypoint python3` hits the system interpreter and fails
+docker run --rm -w /home/allsky/indi-allsky \
+  --entrypoint /home/allsky/venv/bin/python3 \
+  ghcr.io/jaxzin/indi-allsky-web:main -c "import indi_allsky; print('ok')"
+
+# daemon and indiserver: check the published entrypoint and user without
+# starting hardware-dependent processes
+docker image inspect ghcr.io/jaxzin/indi-allsky-daemon:main \
+  --format '{{.Config.User}} {{json .Config.Entrypoint}}'
+docker image inspect ghcr.io/jaxzin/indi-allsky-indiserver:main \
+  --format '{{.Config.User}} {{json .Config.Entrypoint}}'
+```
+
+The full interface — paths, the environment-variable contract, the chart's
+hard requirements, migration behaviour and config-overlay semantics — is in
+[docs/container-contract.md](docs/container-contract.md).
 
 ## Upstream pin model
 
@@ -57,15 +94,21 @@ upstream source at the pinned tag plus the `patches/` directory. See
 - `make upstream` — checkout the pinned upstream tag into `upstream/`,
   verify `UPSTREAM_SHA`, apply `patches/`.
 - `docker buildx bake -f images/docker-bake.hcl` — build the bake group
-  `default`. Current targets: `base` (untagged intermediate) and
-  `indiserver`; the daemon and web images are added next.
+  `default`: `indiserver`, `daemon` and `web`. Three further targets —
+  `base`, `daemon-upstream` and `web-upstream` — are untagged intermediates
+  consumed through buildx named contexts and never published.
+- `make lint` — hadolint, shellcheck and actionlint, all strict. Needs
+  `docker` (hadolint runs from the same digest-pinned image CI uses, so a
+  clean local run means a clean CI run), plus `shellcheck` and `actionlint`
+  on `PATH`.
 - CI builds each architecture natively (`linux/amd64` on `ubuntu-24.04`,
   `linux/arm64` on `ubuntu-24.04-arm` — no QEMU for the INDI compile),
   pushes by digest, then merges the per-arch digests into multi-arch
   manifest lists.
-- Published images: `ghcr.io/jaxzin/indi-allsky-indiserver` (daemon and web
-  variants to follow), each tagged `main` and with the contents of
-  `UPSTREAM_VERSION`; platforms `linux/amd64,linux/arm64`.
+- Published images: `ghcr.io/jaxzin/indi-allsky-indiserver`,
+  `ghcr.io/jaxzin/indi-allsky-daemon` and `ghcr.io/jaxzin/indi-allsky-web`,
+  each tagged `main` and with the contents of `UPSTREAM_VERSION`; platforms
+  `linux/amd64,linux/arm64`.
 - CI keeps its registry build cache in the `ghcr.io/jaxzin/indi-allsky-cache`
   GHCR package (one tag per target and architecture); only authenticated CI
   reads or writes it, so it stays private.
@@ -95,7 +138,8 @@ The chart is hardened by default: every container runs under a restricted
 security context except the device-attached edge containers, and no pod
 mounts a service-account token.
 
-Details: [docs/node-contract.md](docs/node-contract.md). Device access modes
+Details: [docs/node-contract.md](docs/node-contract.md), alongside the
+[container contract](docs/container-contract.md). Device access modes
 and host preparation docs are coming with the edge workload; example
 topologies (shared node with capture priority vs a dedicated tainted node)
 are coming with the scheduling docs.

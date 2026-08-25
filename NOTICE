@@ -6,3 +6,6 @@ tag is the upstream tag named by the image tag plus the patches/ directory at
 the chart repo tag.
 
 Patch contents under patches/ are derived from indi-allsky and are GPL-3.0.
+
+Images also include this repository's own entrypoint and configuration-rendering
+scripts (Apache-2.0; see LICENSE).
