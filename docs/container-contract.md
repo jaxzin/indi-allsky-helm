@@ -13,6 +13,11 @@ Related: [node contract](node-contract.md) ·
 [implementation plan, Task A3](planning/implementation-plan.md) ·
 chart-repo issue #2.
 
+> **Upstream `file.py:line` citations in this document — and in the comments
+> throughout `images/` — are valid at the currently pinned `UPSTREAM_VERSION`
+> and nowhere else.** Line numbers move with every upstream release. Any
+> re-pin must re-verify them as part of the change, not after it.
+
 ## Published images
 
 | Image | Contents | Entrypoint |
@@ -164,38 +169,77 @@ scope limit; the defaults are the usual ones.
 | `INDIALLSKY_WEB_PASS` | — | admin password; must be at least 8 characters |
 | `INDIALLSKY_WEB_NAME` | `Admin` | display name |
 | `INDIALLSKY_WEB_EMAIL` | `admin@example.com` | must match `^[^@]+@[^@]+\.[^@]+$` |
-| `INDIALLSKY_CONFIG_OVERLAY` | `/etc/indi-allsky/config-overlay.json` | overlay path; skipped when the file is absent |
+| `INDIALLSKY_CONFIG_OVERLAY` | `/etc/indi-allsky/config-overlay.json` | overlay path; skipped when the file is absent. See the delivery note below — the default is inside the `/etc/indi-allsky` emptyDir. |
+
+**Overlay delivery needs a decision from the chart.** The default path is
+*inside* the emptyDir mounted at `/etc/indi-allsky`, and a ConfigMap cannot be
+mounted at a path inside another volume except via `subPath` — which has a
+consequential property: **`subPath` mounts do not receive ConfigMap updates.**
+Kubernetes updates projected ConfigMap files in place, but a `subPath` mount is
+resolved once at container start, so an edited ConfigMap never reaches the pod.
+Two options, both defensible:
+
+1. **Mount the ConfigMap somewhere else and repoint `INDIALLSKY_CONFIG_OVERLAY`**
+   at it (for example `/etc/indi-allsky-overlay/config-overlay.json` on its own
+   volume). The overlay then updates in place — though since `migrate.sh` only
+   reads it at start, a restart is still needed to *apply* it.
+2. **Accept `subPath` and restart-to-update**, which is honest for a GitOps
+   flow where a ConfigMap change triggers a rollout anyway.
+
+Option 1 is the cleaner default; the images support either, since the path is
+just an environment variable.
 
 Seeding happens only when the database holds at most one account — the
 internal `system` user that bootstrap creates. It never overwrites a real one.
 
-Those three constraints are `usertool.py`'s own. `migrate.sh` checks them up
-front because `usertool.py` responds to a bad value by *prompting*, and in an
+Those three constraints are `usertool.py`'s own. `migrate.sh` checks them
+immediately before seeding — not earlier — because whether seeding applies at
+all is unknowable until the database is up and the accounts counted. Validating
+earlier would turn "2 accounts already exist; not seeding" into a fatal error
+on any deployment whose bootstrap secret has since been rotated away, which
+would silently make `INDIALLSKY_WEB_PASS` permanently required. The checks
+exist because `usertool.py` responds to a bad value by *prompting*, and in an
 initContainer with no tty that is a hang or a bare `EOFError` traceback rather
 than a diagnosis.
+
+**Accepted risk: `INDIALLSKY_WEB_PASS` transits argv during seeding.**
+`usertool.py` takes the password as `-p <value>`, so for the lifetime of that
+call it is visible in `/proc/<pid>/cmdline` inside the container. Upstream
+offers no `--password-stdin` equivalent, so avoiding this would mean patching
+upstream. The exposure is contained rather than eliminated: pods do not share a
+PID namespace by default, so only processes in this container can read it; the
+initContainer runs alone, before any application container starts; and it runs
+once on a fresh database rather than on every start. Contrast the database
+password, which is passed to `mariadb-dump` via `MYSQL_PWD` specifically to
+keep it out of argv — that one had a no-cost alternative and this one does not.
+If `shareProcessNamespace: true` is ever set on the web pod, revisit this.
 
 ### Migrations and backups — `migrate.sh` only
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `INDIALLSKY_PRE_MIGRATE_DUMP` | `true` | boolean-ish; anything other than `true` skips the pre-migration dump |
+| `INDIALLSKY_PRE_MIGRATE_DUMP` | `true` | boolean; **must be exactly `true` or `false`.** `false` is the only way to skip the pre-migration dump; anything else is a hard failure. A typo that silently skipped the backup and then mutated the schema would invert the safety property this script exists to provide. |
 | `INDIALLSKY_PRE_MIGRATE_DUMP_KEEP` | `8` | how many dumps to retain; must be a whole number ≥ 1 |
-| `INDIALLSKY_BACKUP_DIR` | `/var/www/html/allsky/.state/backups` | where dumps are written; lets the chart keep database dumps off the nginx docroot |
+| `INDIALLSKY_BACKUP_DIR` | `/var/www/html/allsky/.state/backups` | where dumps are written. See the note below — the default is inside the web docroot. |
+
+**The default backup directory sits inside the nginx docroot.** `/var/www/html/allsky` is what the web server serves; `.state/backups` is a subdirectory of it, so a misconfigured or overly permissive web server could serve `pre-migrate_*.sql.gz` — full database dumps, including the `user` table — to anyone who can guess the path. Two mitigations, and the chart should use both: point `INDIALLSKY_BACKUP_DIR` at a path outside the docroot (a separate volume, or a sibling directory the web server does not root at), and add a deny rule for `.state/` to the web server config in A6. The dumps land there by default only because it is the one directory guaranteed to be persistent and writable in every deployment.
 
 ### Capture daemon — `entrypoint-daemon.sh` only
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `INDIALLSKY_DARK_CAPTURE_ENABLE` | `false` | `true` runs dark-frame capture instead of normal capture |
-| `INDIALLSKY_DARK_CAPTURE_DAYTIME` | `true` | `true` passes `--daytime`; **any other value passes `--no-daytime`** |
+| `INDIALLSKY_DARK_CAPTURE_ENABLE` | `false` | boolean; must be exactly `true` or `false`. `true` runs dark-frame capture instead of normal capture. |
+| `INDIALLSKY_DARK_CAPTURE_DAYTIME` | `true` | boolean; must be exactly `true` or `false`. `true` passes `--daytime`, `false` passes `--no-daytime`. |
 | `INDIALLSKY_DARK_CAPTURE_BITMAX` | `16` | max bits returned by the camera |
 | `INDIALLSKY_DARK_CAPTURE_MODE` | `average` | one of `flush`, `average`, `tempaverage`, `sigmaclip`, `tempsigmaclip` |
 | `CAPTURE_TMPDIR` | unset | scratch directory for the capture process; useful when the data volume is network-backed |
 
-The two dark-capture booleans follow upstream's `== "true"` convention rather
-than the strict validation used for `flask.json` settings: a value that is not
-exactly `true` means false. They select a capture mode, not an authorisation
-decision, so a typo produces the safe default rather than a fail-open.
+Both dark-capture booleans are validated strictly, like every other boolean in
+these images — `True`, `TRUE`, `1` and `yes` are all rejected by name. They are
+checked at entrypoint start, before the readiness gate, so a typo fails in about
+a second rather than ten minutes later. Neither can corrupt data, but silently
+reinterpreting `DAYTIME=True` as "capture `--no-daytime` darks" is a bad
+contract regardless of the stakes.
 
 ### Operational
 

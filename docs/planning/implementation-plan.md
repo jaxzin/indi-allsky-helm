@@ -536,8 +536,12 @@ USER root
 RUN rm -f /etc/sudoers.d/* && rm -f /etc/sudoers
 # mariadb-dump for the guarded pre-migrate backup in migrate.sh
 RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client && rm -rf /var/lib/apt/lists/*
-# `flask db check` (the migrate.sh guard) exists only from Flask-Migrate 4.0.6;
-# upstream declares >=4.0.5, so pin the floor here to keep the guard deterministic
+# `flask db check` (the migrate.sh guard) already exists in Flask-Migrate 4.0.5,
+# which is upstream's declared floor — verified: 4.0.5 exposes `check` as a click
+# command in flask_migrate.cli. This pin is therefore an explicit floor guard, not
+# a fix for a missing feature: it states the dependency so a future upstream floor
+# change cannot silently remove the guard. It is a no-op whenever the resolved
+# version already satisfies it.
 RUN /home/allsky/venv/bin/pip install --no-cache-dir 'Flask-Migrate>=4.0.6'
 COPY --chown=allsky:allsky --chmod=755 shared/render-flask-config.sh web/entrypoint-web.sh web/migrate.sh /home/allsky/
 USER allsky
@@ -579,7 +583,7 @@ target "web" {
 }
 ```
 
-- [ ] **Step 6: Lint.** Run: `shellcheck images/shared/*.sh images/daemon/*.sh images/web/*.sh && hadolint images/daemon/Dockerfile images/web/Dockerfile && make bake-print`. Expected: clean; bake graph shows 5 targets.
+- [ ] **Step 6: Lint.** Run: `shellcheck images/shared/*.sh images/daemon/*.sh images/web/*.sh && hadolint images/daemon/Dockerfile images/web/Dockerfile && make bake-print`. Expected: clean; bake graph shows 6 targets (`base`, `indiserver`, `daemon-upstream`, `web-upstream`, `daemon`, `web`).
 
 - [ ] **Step 7: Commit on `claude/k8s-images`, PR, merge.** Verify images CI green; `docker buildx imagetools inspect ghcr.io/jaxzin/indi-allsky-daemon:main` shows both arches. Smoke: `docker run --rm --entrypoint python3 ghcr.io/jaxzin/indi-allsky-web:main -c "import indi_allsky; print('ok')"` → `ok`.
 
