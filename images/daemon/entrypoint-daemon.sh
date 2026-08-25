@@ -10,6 +10,7 @@ set -o nounset
 set -o pipefail
 
 ALLSKY_DIRECTORY="/home/allsky/indi-allsky"
+FLASK_CONFIG="/etc/indi-allsky/flask.json"
 
 # Readiness gate. The cap is generous because the web pod's initContainer has
 # to wait for mariadb, create the schema and seed the config before this can
@@ -34,7 +35,7 @@ DEFAULT_DARK_MODE="average"
 # `sudo chown`/mkdir entrypoint dance is gone with sudo. The effective path
 # comes from the config the render step just wrote, so the default it applies
 # is never restated here.
-IMAGE_FOLDER="$(jq -er '.INDI_ALLSKY_IMAGE_FOLDER' /etc/indi-allsky/flask.json)"
+IMAGE_FOLDER="$(jq -er '.INDI_ALLSKY_IMAGE_FOLDER' "$FLASK_CONFIG")"
 mkdir -p "$IMAGE_FOLDER" || {
     echo "FATAL: cannot create ${IMAGE_FOLDER} — the data volume must be writable by uid 10001 (set fsGroup: 10001)" >&2
     exit 1

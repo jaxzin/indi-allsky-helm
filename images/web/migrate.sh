@@ -63,10 +63,9 @@ IMAGE_FOLDER="$(jq -er '.INDI_ALLSKY_IMAGE_FOLDER' "$FLASK_CONFIG")"
 # these images, so the volume itself has to be writable by uid/gid 10001.
 # images/daemon/entrypoint-daemon.sh repeats the IMAGE_FOLDER line for the
 # capture pod, which mounts the same volume but does not run this script.
-# `flask db init` is given the migration folder's PARENT: alembic refuses to
-# initialise into a directory that already exists and is non-empty, and
-# creating the leaf itself would be the only thing standing between a fresh
-# volume and that error.
+# Only the migration folder's PARENT is created here — `flask db init` creates
+# the leaf itself, and alembic refuses to initialise into a directory that
+# already exists and is non-empty.
 for dir in "$IMAGE_FOLDER" "$(dirname "$MIGRATION_FOLDER")"; do
     mkdir -p "$dir" || {
         echo "FATAL: cannot create ${dir} — the data volume must be writable by uid 10001 (set fsGroup: 10001)" >&2
