@@ -31,7 +31,11 @@ jobs:
           - { runner: ubuntu-24.04, arch: amd64 }
           - { runner: ubuntu-24.04-arm, arch: arm64 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # Six targets now build in one bake invocation. A warm-cache A2 run (base +
+    # indiserver only) measured 4.5 min and a cold one 11.5 min; daemon and web
+    # add two full scientific-python venv builds on top of that, so a first
+    # cold-cache run needs materially more headroom than the old 90.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,6 +54,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Six targets in one bake invocation, and web-upstream shares no layers
+      # with the INDI-derived five, so the runner's default free space is the
+      # binding constraint on this job. Reclaim what the hosted image ships
+      # preloaded before the build rather than failing at 90% of an hour-long
+      # compile.
+      - name: Reclaim runner disk
+        run: docker system prune -af
 
       - name: Bake and push by digest
         env:
@@ -97,14 +109,16 @@ jobs:
         run: |
           UPSTREAM_TAG="$(cat UPSTREAM_VERSION)"
           # Bake metadata keys are target names; images are named after them.
-          # daemon and web do not exist yet — skip any target absent from the
-          # metadata rather than failing.
+          # All three published images are REQUIRED. The earlier skip-on-absent
+          # guard existed only while daemon and web were unimplemented; keeping
+          # it would turn "a target silently stopped building" into a green run
+          # that quietly publishes nothing.
           for image in indiserver daemon web; do
             AMD=$(jq -r --arg t "$image" '.[$t]["containerimage.digest"] // empty' bake-meta-amd64.json)
             ARM=$(jq -r --arg t "$image" '.[$t]["containerimage.digest"] // empty' bake-meta-arm64.json)
             if [ -z "$AMD" ] || [ -z "$ARM" ]; then
-              echo "Skipping ${image}: target not present in bake metadata"
-              continue
+              echo "FATAL: ${image} missing from bake metadata" >&2
+              exit 1
             fi
             docker buildx imagetools create \
               -t "${REGISTRY}/indi-allsky-${image}:main" \

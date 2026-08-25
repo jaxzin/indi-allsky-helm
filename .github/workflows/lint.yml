@@ -28,6 +28,10 @@ jobs:
       - name: Find shell scripts
         id: files
         run: |
+          # Print the matches: the guard below is silent about what it found,
+          # so without this a linter that scanned nothing looks the same in the
+          # log as one that scanned everything.
+          find images -name '*.sh' -type f -print
           if find images -name '*.sh' -type f 2>/dev/null | grep -q .; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
@@ -48,6 +52,8 @@ jobs:
       - name: Find Dockerfiles
         id: files
         run: |
+          # Print the matches: see the shellcheck job's note above.
+          find images -name 'Dockerfile*' -type f -print
           if find images -name 'Dockerfile*' -type f 2>/dev/null | grep -q .; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
