@@ -1,0 +1,13 @@
+# CI-only internal-database mode with the verified scheduled backup enabled.
+# All credentials are throwaway render fixtures; this directory is excluded
+# from packaged charts by .helmignore.
+credentials:
+  flaskSecretKey: ci-dummy
+  flaskPasswordKey: ci-dummy
+  mariadbPassword: ci-dummy
+mariadb:
+  rootCredentials:
+    password: ci-root-dummy
+  backup:
+    enabled: true
+    schedule: "20 4 * * *"
