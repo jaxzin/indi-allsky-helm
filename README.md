@@ -66,3 +66,6 @@ upstream source at the pinned tag plus the `patches/` directory. See
 - Published images: `ghcr.io/jaxzin/indi-allsky-indiserver` (daemon and web
   variants to follow), each tagged `main` and with the contents of
   `UPSTREAM_VERSION`; platforms `linux/amd64,linux/arm64`.
+- CI keeps its registry build cache in the `ghcr.io/jaxzin/indi-allsky-cache`
+  GHCR package (one tag per target and architecture); only authenticated CI
+  reads or writes it, so it stays private.

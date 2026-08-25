@@ -68,7 +68,5 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Checkout pinned upstream and apply patches
-        run: make upstream
-      - name: Validate bake graph
-        run: docker buildx bake -f images/docker-bake.hcl --print
+      - name: Run the pin gate and validate the bake graph
+        run: make bake-print

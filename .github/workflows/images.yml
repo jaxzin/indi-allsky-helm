@@ -41,6 +41,9 @@ jobs:
         run: make upstream
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          # Pin buildx itself — the action installs floating latest otherwise.
+          version: v0.36.1
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -51,16 +54,15 @@ jobs:
       - name: Bake and push by digest
         env:
           ARCH: ${{ matrix.arch }}
+          # Per-target registry cache refs — scheme and rationale live in
+          # images/docker-bake.hcl. Reads always on; writes main-only.
+          CACHE_REGISTRY: ${{ env.REGISTRY }}/indi-allsky-cache
+          CACHE_ARCH: ${{ matrix.arch }}
+          CACHE_WRITE: ${{ github.ref == 'refs/heads/main' }}
         run: |
-          set -- \
+          docker buildx bake -f images/docker-bake.hcl \
             --set "*.platform=linux/${ARCH}" \
             --set "*.output=type=image,push-by-digest=true,push=true,name-canonical=true" \
-            --set "*.cache-from=type=registry,ref=${REGISTRY}/indi-allsky-cache:${ARCH}"
-          # Cache writes only from main; every other ref is read-only.
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            set -- "$@" --set "*.cache-to=type=registry,ref=${REGISTRY}/indi-allsky-cache:${ARCH},mode=max"
-          fi
-          docker buildx bake -f images/docker-bake.hcl "$@" \
             --metadata-file "bake-meta-${ARCH}.json"
 
       - uses: actions/upload-artifact@v7
