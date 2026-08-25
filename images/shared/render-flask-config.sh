@@ -77,6 +77,20 @@ require_nonempty() {  # $1=name $2=value — must not be the empty string
     printf '%s' "$2"
 }
 
+# Values that land in the DSN but must NOT be percent-encoded (see the DSN
+# section below) are constrained by character class instead. That keeps the
+# anti-injection property — nothing that could add a URI delimiter, a query
+# parameter or a host gets through — without the round-trip corruption that
+# encoding would introduce.
+require_charset() {  # $1=name $2=value $3=allowed-character-class $4=human description
+    case "$2" in
+        *[!$3]*)
+            printf 'FATAL: %s may contain only %s (got %d bytes)\n' "$1" "$4" "${#2}" >&2
+            exit 1 ;;
+    esac
+    printf '%s' "$2"
+}
+
 
 # --- database connection ----------------------------------------------------
 #
@@ -91,27 +105,52 @@ require_nonempty() {  # $1=name $2=value — must not be the empty string
 
 DB_USER="$(require_nonempty MARIADB_USER "${MARIADB_USER:-}")"
 DB_PASS="$(require_nonempty MARIADB_PASSWORD "${MARIADB_PASSWORD:-}")"
-DB_NAME="$(require_nonempty MARIADB_DATABASE "${MARIADB_DATABASE:-}")"
-DB_HOST="$(require_nonempty INDIALLSKY_MARIADB_HOST "${INDIALLSKY_MARIADB_HOST:-}")"
-DB_PORT="${INDIALLSKY_MARIADB_PORT:-3306}"
-DB_CHARSET="${INDIALLSKY_MARIADB_CHARSET:-utf8mb4}"
-DB_COLLATION="${INDIALLSKY_MARIADB_COLLATION:-utf8mb4_unicode_ci}"
 DB_SSL="$(require_bool INDIALLSKY_MARIADB_SSL "${INDIALLSKY_MARIADB_SSL:-false}")"
 
-# Percent-encode the URI userinfo and path segments. Deliberate divergence
-# from upstream docker/start_gunicorn.sh, which interpolates these raw: a
-# generated password containing @ : / ? & # or % silently re-points or
+# Character classes for the DSN components that are validated rather than
+# encoded. Deliberately narrow: they describe what MariaDB and DNS actually
+# accept, not what a URI could carry.
+DB_NAME_CHARS='a-zA-Z0-9_$'                 # MariaDB unquoted identifier
+DB_HOST_CHARS='a-zA-Z0-9.:_-'               # hostname, IPv4, or bare IPv6
+DB_PORT_CHARS='0-9'
+
+DB_NAME="$(require_charset MARIADB_DATABASE \
+    "$(require_nonempty MARIADB_DATABASE "${MARIADB_DATABASE:-}")" \
+    "$DB_NAME_CHARS" 'letters, digits, underscore and $')"
+DB_HOST="$(require_charset INDIALLSKY_MARIADB_HOST \
+    "$(require_nonempty INDIALLSKY_MARIADB_HOST "${INDIALLSKY_MARIADB_HOST:-}")" \
+    "$DB_HOST_CHARS" 'hostname characters (letters, digits, dot, colon, hyphen, underscore)')"
+DB_PORT="$(require_charset INDIALLSKY_MARIADB_PORT "${INDIALLSKY_MARIADB_PORT:-3306}" \
+    "$DB_PORT_CHARS" 'digits')"
+
+DB_CHARSET="${INDIALLSKY_MARIADB_CHARSET:-utf8mb4}"
+DB_COLLATION="${INDIALLSKY_MARIADB_COLLATION:-utf8mb4_unicode_ci}"
+
+# Percent-encode the URI USERINFO — and only the userinfo. Deliberate
+# divergence from upstream docker/start_gunicorn.sh, which interpolates it
+# raw: a generated password containing @ : / ? & # or % silently re-points or
 # truncates the DSN rather than failing (SQLAlchemy's make_url raises on, for
-# example, 'p@ss:w/rd#1?x%y'), so a random password can turn into an
-# unexplained connection error or a connection to the wrong host.
+# example, 'p@ss:w/rd#1?x%y'), so a random password turns into an unexplained
+# connection error or a connection to the wrong host.
+#
+# The database, host and port are NOT encoded, because SQLAlchemy's handling
+# is asymmetric — verified against sqlalchemy 2.0.52, the version in these
+# images:
+#     make_url(".../db%20name").database  -> 'db%20name'   (NOT decoded)
+#     make_url("...:%70@...").password    -> 'p'           (decoded)
+# Encoding the database component would therefore hand the driver a literal
+# '%20' as part of the schema name and connect to the wrong database — a
+# round-trip bug introduced by the fix. Validation above keeps the property
+# that mattered (no injected delimiters) without that cost, and it also
+# protects the daemon pod, which has no make_url parse-back to catch garbage
+# the way migrate.sh does.
 DB_USER_ENC="$(jq -rn --arg v "$DB_USER" '$v|@uri')"
 DB_PASS_ENC="$(jq -rn --arg v "$DB_PASS" '$v|@uri')"
-DB_NAME_ENC="$(jq -rn --arg v "$DB_NAME" '$v|@uri')"
 
 if [ "$DB_SSL" == "true" ]; then
-    SQLALCHEMY_DATABASE_URI="mysql+mysqlconnector://${DB_USER_ENC}:${DB_PASS_ENC}@${DB_HOST}:${DB_PORT}/${DB_NAME_ENC}?ssl_ca=/etc/ssl/certs/ca-certificates.crt&ssl_verify_identity&charset=${DB_CHARSET}&collation=${DB_COLLATION}"
+    SQLALCHEMY_DATABASE_URI="mysql+mysqlconnector://${DB_USER_ENC}:${DB_PASS_ENC}@${DB_HOST}:${DB_PORT}/${DB_NAME}?ssl_ca=/etc/ssl/certs/ca-certificates.crt&ssl_verify_identity&charset=${DB_CHARSET}&collation=${DB_COLLATION}"
 else
-    SQLALCHEMY_DATABASE_URI="mysql+mysqlconnector://${DB_USER_ENC}:${DB_PASS_ENC}@${DB_HOST}:${DB_PORT}/${DB_NAME_ENC}?charset=${DB_CHARSET}&collation=${DB_COLLATION}"
+    SQLALCHEMY_DATABASE_URI="mysql+mysqlconnector://${DB_USER_ENC}:${DB_PASS_ENC}@${DB_HOST}:${DB_PORT}/${DB_NAME}?charset=${DB_CHARSET}&collation=${DB_COLLATION}"
 fi
 
 
@@ -166,6 +205,17 @@ MIGRATION_FOLDER="${INDIALLSKY_MIGRATION_FOLDER:-$DEFAULT_MIGRATION_FOLDER}"
 
 mkdir -p "$ALLSKY_ETC" || {
     printf 'FATAL: cannot create %s — mount an emptyDir there and set fsGroup: 10001\n' "$ALLSKY_ETC" >&2
+    exit 1
+}
+
+# The mkdir above almost never fires in the failure that actually happens. A
+# Kubernetes emptyDir mounted here EXISTS, root-owned and 0755, so `mkdir -p`
+# succeeds and the run instead dies several lines later on a raw
+# "$ALLSKY_ETC/.flask.json.tmp: Permission denied" that names a temp file and
+# says nothing about fsGroup. Probe writability explicitly so the diagnosis
+# reaches the operator.
+[ -w "$ALLSKY_ETC" ] || {
+    printf 'FATAL: %s is not writable by uid 10001 — set securityContext.fsGroup: 10001 on the pod\n' "$ALLSKY_ETC" >&2
     exit 1
 }
 
