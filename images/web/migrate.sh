@@ -77,14 +77,23 @@ done
 # same one the application uses. That keeps the port default in one place and
 # turns a DSN the app could not parse into a failure here, at migration time,
 # rather than at the first web request.
+# make_url's failure mode is version-dependent — it has raised ValueError,
+# ArgumentError and (on malformed ports) its own subclasses across releases —
+# so every exception is turned into one clean FATAL rather than a traceback
+# whose top line changes with the pinned SQLAlchemy. The exception text is
+# deliberately NOT echoed: the URI it describes contains the database password.
 dsn_field() {  # $1 = SQLAlchemy URL attribute name
     python3 -c 'import json, sys
 from sqlalchemy.engine import make_url
-with open(sys.argv[1], encoding="utf-8") as handle:
-    url = make_url(json.load(handle)["SQLALCHEMY_DATABASE_URI"])
-value = getattr(url, sys.argv[2])
+field = sys.argv[2]
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        url = make_url(json.load(handle)["SQLALCHEMY_DATABASE_URI"])
+except Exception as exc:
+    sys.exit("FATAL: rendered database URI is unparseable ({0})".format(type(exc).__name__))
+value = getattr(url, field, None)
 if value is None:
-    sys.exit("FATAL: rendered database URI has no " + sys.argv[2])
+    sys.exit("FATAL: rendered database URI has no " + field)
 print(value)' "$FLASK_CONFIG" "$1"
 }
 
@@ -147,7 +156,20 @@ else
     # CI-committed revisions replace this block and are a hard prerequisite
     # for the first UPSTREAM_VERSION bump — tracked in issue #9. Until then
     # the dump below is what makes an unreviewed migration recoverable.
-    if [ "${INDIALLSKY_PRE_MIGRATE_DUMP:-true}" == "true" ]; then
+    # Strict true|false, for the same reason as PRE_MIGRATE_DUMP_KEEP below. A
+    # loose `== "true"` test treats True, TRUE, 1, yes and every typo as "skip
+    # the dump", so a mistyped value silently discards the backup and then
+    # mutates the schema, at exit 0 — this file's safety property inverted.
+    # Only the length is reported, never the value. This variable is consumed
+    # nowhere but here, so render-flask-config.sh's require_bool never sees it.
+    PRE_MIGRATE_DUMP="${INDIALLSKY_PRE_MIGRATE_DUMP:-true}"
+    case "$PRE_MIGRATE_DUMP" in
+        true|false) ;;
+        *) echo "FATAL: INDIALLSKY_PRE_MIGRATE_DUMP must be exactly \"true\" or \"false\" (got ${#PRE_MIGRATE_DUMP} bytes) — a typo here would silently skip the pre-migration backup" >&2
+           exit 1 ;;
+    esac
+
+    if [ "$PRE_MIGRATE_DUMP" == "true" ]; then
         DUMP_DIR="${INDIALLSKY_BACKUP_DIR:-$DEFAULT_BACKUP_DIR}"
         PRE_MIGRATE_DUMP_KEEP="${INDIALLSKY_PRE_MIGRATE_DUMP_KEEP:-8}"
 
@@ -234,24 +256,45 @@ fi
 # same constraints up front (misc/usertool.py:44, :109, :132) and redirect
 # stdin from /dev/null so any remaining prompt fails immediately instead of
 # blocking the pod.
+#
+# LOCAL_AUTH_ENABLE is not re-validated here: render-flask-config.sh already
+# put it through require_bool and aborted before this script got this far.
+#
+# The credential guards live INSIDE the seeding branch, not above it. Two
+# reviewers reached this placement from opposite directions, so the
+# reasoning is recorded here rather than re-litigated:
+#
+#   * Hoisting them earlier would fail a credential typo in ~1s instead of
+#     ~7s, before any schema work — a real diagnosis-speed gain.
+#   * But whether seeding applies at all is unknowable until the database is
+#     up and counted. On an already-seeded deployment whose bootstrap secret
+#     has since been rotated away, hoisted guards turn "2 accounts exist;
+#     not seeding" into a FATAL, bricking the initContainer on every restart
+#     and silently making INDIALLSKY_WEB_PASS permanently required — a
+#     contract change nobody agreed to.
+#
+# Validation may therefore only gate the seeding *action*, which is what this
+# ordering does. The diagnosis-speed loss is bounded by the DB wait and is
+# the cheaper of the two costs.
 if [ "${INDIALLSKY_LOCAL_AUTH_ENABLE:-true}" == "true" ] && [ -n "${INDIALLSKY_WEB_USER:-}" ]; then
-    WEB_PASS="${INDIALLSKY_WEB_PASS:-}"
-    WEB_EMAIL="${INDIALLSKY_WEB_EMAIL:-admin@example.com}"
-
-    case "$INDIALLSKY_WEB_USER" in *[[:space:]]*)
-        echo "FATAL: INDIALLSKY_WEB_USER must not contain spaces" >&2; exit 1 ;;
-    esac
-    if [ "${#WEB_PASS}" -lt "$MIN_WEB_PASS_LENGTH" ]; then
-        echo "FATAL: INDIALLSKY_WEB_PASS must be at least ${MIN_WEB_PASS_LENGTH} characters" >&2
-        exit 1
-    fi
-    if ! printf '%s' "$WEB_EMAIL" | grep -Eq '^[^@]+@[^@]+\.[^@]+$'; then
-        echo "FATAL: INDIALLSKY_WEB_EMAIL is not a valid address" >&2
-        exit 1
-    fi
-
     USER_COUNT=$(./config.py user_count)
+
     if [ "$USER_COUNT" -le "$MAX_USER_COUNT_FOR_SEED" ]; then
+        WEB_PASS="${INDIALLSKY_WEB_PASS:-}"
+        WEB_EMAIL="${INDIALLSKY_WEB_EMAIL:-admin@example.com}"
+
+        case "$INDIALLSKY_WEB_USER" in *[[:space:]]*)
+            echo "FATAL: INDIALLSKY_WEB_USER must not contain spaces" >&2; exit 1 ;;
+        esac
+        if [ "${#WEB_PASS}" -lt "$MIN_WEB_PASS_LENGTH" ]; then
+            echo "FATAL: INDIALLSKY_WEB_PASS must be at least ${MIN_WEB_PASS_LENGTH} characters" >&2
+            exit 1
+        fi
+        if ! printf '%s' "$WEB_EMAIL" | grep -Eq '^[^@]+@[^@]+\.[^@]+$'; then
+            echo "FATAL: INDIALLSKY_WEB_EMAIL is not a valid address" >&2
+            exit 1
+        fi
+
         echo "Seeding admin account ${INDIALLSKY_WEB_USER}"
         ./misc/usertool.py adduser -u "$INDIALLSKY_WEB_USER" -p "$WEB_PASS" \
             -f "${INDIALLSKY_WEB_NAME:-Admin}" -e "$WEB_EMAIL" </dev/null
