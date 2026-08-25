@@ -9,6 +9,7 @@
 - **A4 ✅** — chart-repo PR #12. Values contract landed byte-faithful to this plan's block (one necessary fix: PriorityClass `value` needs `| int` — helm renders 1e+06 otherwise).
 - **A3 ⏳** — Batch 2 in progress; chart-repo issue #2 is the binding obligations ledger (incl. Batch 1 lessons-learned).
 - **Corrections found in execution** (this plan text deliberately NOT retro-edited; merged code + tracker are authoritative): the peeled-only `ls-remote` UPSTREAM_SHA resolve returns EMPTY on upstream's lightweight tag (use the two-pattern form); `UPSTREAM_SHA` was missing from A2's file list; `rhysd/actionlint` is not a `uses:`-able action (devops-actions wrapper used); `images.yml` dropped the `chart-v*` tags trigger (chart tags don't change image content — release-digest race); wildcard `--set` caused BOTH production failures (cache-ref collision, tagged-ref push-by-digest refusal) — per-target HCL helpers (`cache_from`/`cache_to`/`publish_tags`/`publish_output`) are now the pattern; `setup-helm`'s SHA pin doesn't pin helm (`version:` input required); `ct` runs with `check-version-increment: false` pre-1.0.
+- **Three deliberate exceptions to the no-retro-edit convention above**, made at the A3 review bench's request rather than by the author's choice, because leaving them would have propagated errors into work not yet started: Task A3 Step 6's target count (`5` → `6`), Step 4's Flask-Migrate rationale (`check` exists from 4.0.5, not 4.0.6 — the 4.0.6 floor comes from issue #2's acceptance criterion, not from feature availability), and Step 7's smoke command (a bare `--entrypoint python3` hits the system interpreter and fails; the venv interpreter plus the checkout as cwd are the contract). The convention still holds everywhere else: merged code and the tracker remain authoritative.
 
 > **For agentic workers:** implement this plan task-by-task with fresh-context workers and per-task review. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -538,10 +539,12 @@ RUN rm -f /etc/sudoers.d/* && rm -f /etc/sudoers
 RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client && rm -rf /var/lib/apt/lists/*
 # `flask db check` (the migrate.sh guard) already exists in Flask-Migrate 4.0.5,
 # which is upstream's declared floor — verified: 4.0.5 exposes `check` as a click
-# command in flask_migrate.cli. This pin is therefore an explicit floor guard, not
-# a fix for a missing feature: it states the dependency so a future upstream floor
-# change cannot silently remove the guard. It is a no-op whenever the resolved
-# version already satisfies it.
+# command in flask_migrate.cli. So 4.0.6 is not the earliest version carrying the
+# guard; the floor value comes from the binding acceptance criterion on issue #2,
+# a conservative margin above the earliest supporting version. The pin's purpose
+# is to state the dependency explicitly so a future upstream floor change cannot
+# silently remove the guard; it is a no-op when the resolved version already
+# satisfies it.
 RUN /home/allsky/venv/bin/pip install --no-cache-dir 'Flask-Migrate>=4.0.6'
 COPY --chown=allsky:allsky --chmod=755 shared/render-flask-config.sh web/entrypoint-web.sh web/migrate.sh /home/allsky/
 USER allsky
@@ -585,7 +588,7 @@ target "web" {
 
 - [ ] **Step 6: Lint.** Run: `shellcheck images/shared/*.sh images/daemon/*.sh images/web/*.sh && hadolint images/daemon/Dockerfile images/web/Dockerfile && make bake-print`. Expected: clean; bake graph shows 6 targets (`base`, `indiserver`, `daemon-upstream`, `web-upstream`, `daemon`, `web`).
 
-- [ ] **Step 7: Commit on `claude/k8s-images`, PR, merge.** Verify images CI green; `docker buildx imagetools inspect ghcr.io/jaxzin/indi-allsky-daemon:main` shows both arches. Smoke: `docker run --rm --entrypoint python3 ghcr.io/jaxzin/indi-allsky-web:main -c "import indi_allsky; print('ok')"` → `ok`.
+- [ ] **Step 7: Commit on `claude/k8s-images`, PR, merge.** Verify images CI green; `docker buildx imagetools inspect ghcr.io/jaxzin/indi-allsky-daemon:main` shows both arches. Smoke: `docker run --rm -w /home/allsky/indi-allsky --entrypoint /home/allsky/venv/bin/python3 ghcr.io/jaxzin/indi-allsky-web:main -c "import indi_allsky; print('ok')"` → `ok`. (A bare `--entrypoint python3` runs the *system* interpreter, which cannot import `indi_allsky`; the venv interpreter and the checkout as cwd are both part of the contract.)
 
 ---
 

@@ -101,12 +101,24 @@ in pods, and pod logs are widely readable.
 | --- | --- | --- |
 | `MARIADB_USER` | *required* | database account |
 | `MARIADB_PASSWORD` | *required* | its password |
-| `MARIADB_DATABASE` | *required* | schema name |
-| `INDIALLSKY_MARIADB_HOST` | *required* | database host |
-| `INDIALLSKY_MARIADB_PORT` | `3306` | database port |
+| `MARIADB_DATABASE` | *required* | schema name. **Constrained:** letters, digits, `_`, `-`, `$`. (`indi-allsky` is fine.) |
+| `INDIALLSKY_MARIADB_HOST` | *required* | database host. **Constrained:** letters, digits, `.`, `:`, `-`, `_` — hostnames, IPv4, and bare IPv6 all pass. |
+| `INDIALLSKY_MARIADB_PORT` | `3306` | database port. **Constrained:** digits only. |
 | `INDIALLSKY_MARIADB_SSL` | `false` | boolean; `true` adds `ssl_ca` + `ssl_verify_identity` to the DSN |
-| `INDIALLSKY_MARIADB_CHARSET` | `utf8mb4` | connection charset |
-| `INDIALLSKY_MARIADB_COLLATION` | `utf8mb4_unicode_ci` | connection collation |
+| `INDIALLSKY_MARIADB_CHARSET` | `utf8mb4` | connection charset. **Constrained:** letters, digits, `_`. |
+| `INDIALLSKY_MARIADB_COLLATION` | `utf8mb4_unicode_ci` | connection collation. **Constrained:** letters, digits, `_`. |
+
+**The five "Constrained" rows are hard failures, not warnings.** Each of those
+values is interpolated into the database URI at a position SQLAlchemy does *not*
+percent-decode, so they cannot be encoded on the way in without corrupting them
+(`make_url` returns the database component verbatim, `%20` and all). They are
+validated by character class instead, which preserves the property that matters:
+nothing reaching the DSN can introduce a URI delimiter, an extra query parameter,
+or a different host. Without it, `INDIALLSKY_MARIADB_CHARSET=utf8mb4&ssl_verify_identity=false`
+would append a real query parameter and silently disable certificate hostname
+verification on an SSL connection. A value outside its class aborts the render
+with an error naming the variable — the pod does not start with a
+half-understood connection string.
 
 The bare `MARIADB_*` names are the official mariadb image's own environment
 contract — the database container reads those exact names to provision the
@@ -235,7 +247,8 @@ If `shareProcessNamespace: true` is ever set on the web pod, revisit this.
 | `CAPTURE_TMPDIR` | unset | scratch directory for the capture process; useful when the data volume is network-backed |
 
 Both dark-capture booleans are validated strictly, like every other boolean in
-these images — `True`, `TRUE`, `1` and `yes` are all rejected by name. They are
+these images — `True`, `TRUE`, `1` and `yes` are all rejected, with an error
+naming the variable (values themselves are never echoed, only their length). They are
 checked at entrypoint start, before the readiness gate, so a typo fails in about
 a second rather than ten minutes later. Neither can corrupt data, but silently
 reinterpreting `DAYTIME=True` as "capture `--no-daytime` darks" is a bad
