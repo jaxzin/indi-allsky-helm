@@ -110,8 +110,11 @@ target "daemon" {
   dockerfile = "daemon/Dockerfile"
   contexts   = { "daemon.upstream" = "target:daemon-upstream" }
   labels = {
-    "org.opencontainers.image.source"   = "https://github.com/jaxzin/indi-allsky-helm"
-    "org.opencontainers.image.licenses" = "GPL-3.0-only"
+    "org.opencontainers.image.source" = "https://github.com/jaxzin/indi-allsky-helm"
+    # Deliberately differs from indiserver's plain "GPL-3.0-only": this image
+    # also carries this repo's own Apache-2.0 entrypoint and config-rendering
+    # scripts, which NOTICE records. The label and NOTICE must agree.
+    "org.opencontainers.image.licenses" = "GPL-3.0-only AND Apache-2.0"
   }
   cache-from = cache_from("daemon")
   cache-to   = cache_to("daemon")
@@ -124,8 +127,9 @@ target "web" {
   dockerfile = "web/Dockerfile"
   contexts   = { "web.upstream" = "target:web-upstream" }
   labels = {
-    "org.opencontainers.image.source"   = "https://github.com/jaxzin/indi-allsky-helm"
-    "org.opencontainers.image.licenses" = "GPL-3.0-only"
+    "org.opencontainers.image.source" = "https://github.com/jaxzin/indi-allsky-helm"
+    # As with daemon: this image ships this repo's Apache-2.0 scripts too.
+    "org.opencontainers.image.licenses" = "GPL-3.0-only AND Apache-2.0"
   }
   cache-from = cache_from("web")
   cache-to   = cache_to("web")

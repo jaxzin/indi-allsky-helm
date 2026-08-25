@@ -16,6 +16,11 @@ USER 0
 # this repo's entrypoints or upstream's Python calls sudo (only upstream's
 # start scripts did, and this image replaces them).
 #
+# Upstream's start script goes with it. This image supplies the ENTRYPOINT
+# instead, and that script opens with `sudo chown` — so it is not merely
+# unused, it is guaranteed-broken dead weight whose only remaining effect
+# would be to mislead anyone who overrode the entrypoint to run it.
+#
 # Exact apt version pins on a floating Debian base (python:3.13-slim tracks
 # Debian point releases) are false precision: they break on every point release
 # while the base itself keeps floating. The upstream pin that actually governs
@@ -23,7 +28,7 @@ USER 0
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends mariadb-client \
-    && rm -f /etc/sudoers /etc/sudoers.d/* \
+    && rm -f /etc/sudoers /etc/sudoers.d/* /home/allsky/start_gunicorn.sh \
     && SUDO_FORCE_REMOVE=yes apt-get purge -y sudo \
     && apt-get autoremove -y --purge \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
