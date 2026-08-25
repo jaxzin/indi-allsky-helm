@@ -152,6 +152,19 @@ else
         DUMP_DIR="${INDIALLSKY_BACKUP_DIR:-$DEFAULT_BACKUP_DIR}"
         PRE_MIGRATE_DUMP_KEEP="${INDIALLSKY_PRE_MIGRATE_DUMP_KEEP:-8}"
 
+        # A retention of 0 would prune the dump taken moments ago, immediately
+        # before the schema is mutated — the safety property inverted. A
+        # non-numeric value would make the arithmetic below silently mean 0.
+        case "$PRE_MIGRATE_DUMP_KEEP" in
+            ''|*[!0-9]*)
+                echo "FATAL: INDIALLSKY_PRE_MIGRATE_DUMP_KEEP must be a whole number (got ${#PRE_MIGRATE_DUMP_KEEP} bytes)" >&2
+                exit 1 ;;
+        esac
+        if [ "$PRE_MIGRATE_DUMP_KEEP" -lt 1 ]; then
+            echo "FATAL: INDIALLSKY_PRE_MIGRATE_DUMP_KEEP must be at least 1 — retaining zero dumps would delete the backup this migration depends on. To skip the dump entirely, set INDIALLSKY_PRE_MIGRATE_DUMP=false." >&2
+            exit 1
+        fi
+
         mkdir -p "$DUMP_DIR"
         DUMP_FILE="${DUMP_DIR}/pre-migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
 
