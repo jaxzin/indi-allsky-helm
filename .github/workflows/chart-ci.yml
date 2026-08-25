@@ -1,0 +1,83 @@
+name: chart-ci
+
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - "e2e/**"
+      - "ct.yaml"
+      - ".github/workflows/chart-ci.yml"
+      - "UPSTREAM_VERSION"
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+      - "e2e/**"
+      - "ct.yaml"
+      - ".github/workflows/chart-ci.yml"
+      - "UPSTREAM_VERSION"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chart-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # UPSTREAM_VERSION is the single source of truth for the upstream build
+      # pin; Chart.yaml appVersion is the deliberately-synced chart-facing copy
+      # of it. Fail fast on drift. Guarded on existence because UPSTREAM_VERSION
+      # lands with the image-build scaffolding — the guard tightens into a real
+      # check automatically once that file is on the branch.
+      - name: Chart appVersion matches UPSTREAM_VERSION
+        run: |
+          if [ ! -f UPSTREAM_VERSION ]; then
+            echo "UPSTREAM_VERSION not present yet; skipping drift check (becomes enforcing once the file lands)."
+            exit 0
+          fi
+          upstream="$(cat UPSTREAM_VERSION)"
+          appver="$(yq -r .appVersion charts/indi-allsky/Chart.yaml)"
+          if [ "$upstream" != "$appver" ]; then
+            echo "::error::UPSTREAM_VERSION ($upstream) and Chart.yaml appVersion ($appver) have drifted — update charts/indi-allsky/Chart.yaml appVersion to match the upstream build pin."
+            exit 1
+          fi
+          echo "appVersion $appver matches UPSTREAM_VERSION"
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # The SHA above pins the action, not helm — pin helm explicitly too.
+          version: v3.21.4
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version 1.1.2
+
+      - name: helm unittest
+        run: helm unittest charts/indi-allsky
+
+      - uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+
+      - name: ct lint
+        run: ct lint --config ct.yaml
+
+      # ci/ci-values.yaml carries throwaway dev credentials so this render keeps
+      # passing once required-credential guards land (Task A5, #4) — CI never
+      # holds real secrets. kubeconform is digest-pinned (tags are mutable) and
+      # reads the manifests on stdin.
+      - name: kubeconform
+        run: |
+          helm template charts/indi-allsky \
+            --values charts/indi-allsky/ci/ci-values.yaml | \
+            docker run -i ghcr.io/yannh/kubeconform@sha256:6b90a5f23d846140ce0194fe050b1995e546eba938f3a6bf10c039dd5e24588f \
+            -strict -summary -kubernetes-version 1.26.0
+
+  # e2e job (kind + INDI simulator smoke test) is added in Task A9 (#8).

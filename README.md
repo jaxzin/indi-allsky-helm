@@ -69,3 +69,33 @@ upstream source at the pinned tag plus the `patches/` directory. See
 - CI keeps its registry build cache in the `ghcr.io/jaxzin/indi-allsky-cache`
   GHCR package (one tag per target and architecture); only authenticated CI
   reads or writes it, so it stays private.
+
+## Node contract
+
+The chart pins capture to your camera hardware through two node labels; every
+other workload (web UI, database, optional MQTT) floats on ordinary cluster
+compute.
+
+- `indi-allsky.io/camera: "true"` — this node has the all-sky camera attached.
+  Manual labeling is the baseline; optional autodiscovery of USB cameras via
+  Node Feature Discovery is available through the `discovery.nfd.*` values.
+- `indi-allsky.io/sensors: "true"` — this node is wired to environmental
+  sensors (GPIO / i2c / SPI / 1-wire). Always applied manually: physical
+  wiring cannot be autodiscovered.
+
+**v1 constraint:** camera and sensors must be on the **same node**. Upstream
+indi-allsky runs capture, sensing, and processing as one multiprocess
+application coordinating over shared memory, so the chart schedules them as a
+single edge pod — its node selector requires the camera label, plus the
+sensors label when `edge.sensors.enabled` is `true`. The relevant values are
+`nodeContract.cameraLabel`, `nodeContract.sensorsLabel`, and
+`edge.sensors.enabled`.
+
+The chart is hardened by default: every container runs under a restricted
+security context except the device-attached edge containers, and no pod
+mounts a service-account token.
+
+Details: [docs/node-contract.md](docs/node-contract.md). Device access modes
+and host preparation docs are coming with the edge workload; example
+topologies (shared node with capture priority vs a dedicated tainted node)
+are coming with the scheduling docs.

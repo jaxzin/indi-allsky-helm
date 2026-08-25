@@ -1,0 +1,11 @@
+apiVersion: v2
+name: indi-allsky
+description: indi-allsky on Kubernetes — capture pinned to the camera node, everything else floats
+type: application
+version: 0.1.0
+appVersion: "indi_v2026.08.01"
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/jaxzin/indi-allsky-helm
+sources:
+  - https://github.com/jaxzin/indi-allsky-helm
+  - https://github.com/aaronwmorris/indi-allsky

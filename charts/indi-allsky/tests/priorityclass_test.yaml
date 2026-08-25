@@ -1,0 +1,11 @@
+suite: priority class
+templates: [priorityclass.yaml]
+tests:
+  - it: renders with the configured value
+    asserts:
+      - equal: { path: value, value: 1000000 }
+      - equal: { path: kind, value: PriorityClass }
+  - it: can be disabled
+    set: { edge.priorityClass.create: false }
+    asserts:
+      - hasDocuments: { count: 0 }

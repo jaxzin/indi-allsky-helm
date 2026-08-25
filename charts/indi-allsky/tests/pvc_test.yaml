@@ -1,0 +1,11 @@
+suite: data pvc
+templates: [pvc-data.yaml]
+tests:
+  - it: renders an RWX PVC by default
+    asserts:
+      - equal: { path: "spec.accessModes[0]", value: ReadWriteMany }
+      - equal: { path: spec.resources.requests.storage, value: 100Gi }
+  - it: is omitted when existingClaim is set
+    set: { storage.data.existingClaim: my-claim }
+    asserts:
+      - hasDocuments: { count: 0 }

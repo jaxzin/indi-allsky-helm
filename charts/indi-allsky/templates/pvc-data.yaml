@@ -1,0 +1,15 @@
+{{- if not .Values.storage.data.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "indi-allsky.fullname" . }}-data
+  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
+spec:
+  accessModes: {{- toYaml .Values.storage.data.accessModes | nindent 4 }}
+  {{- with .Values.storage.data.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.data.size }}
+{{- end }}

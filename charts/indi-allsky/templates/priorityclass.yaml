@@ -1,0 +1,11 @@
+{{- if .Values.edge.priorityClass.create }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "indi-allsky.fullname" . }}-capture
+  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
+{{- /* `| int` guards against Go templates rendering large numbers as 1e+06 */}}
+value: {{ .Values.edge.priorityClass.value | int }}
+globalDefault: false
+description: "indi-allsky capture — outranks ordinary workloads on the camera node"
+{{- end }}
