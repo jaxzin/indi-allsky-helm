@@ -39,57 +39,15 @@ DEFAULT_MIGRATION_FOLDER="${HTDOCS_FOLDER}/.state/migrations"
 FLASK_CONFIG_MODE="600"
 
 
-# --- typed validation -------------------------------------------------------
+# --- validation ------------------------------------------------------------
 #
-# jq's --argjson accepts ANY well-formed JSON, so an operator typo turns into a
-# silent fail-open instead of an error:
-#   * OIDC_ALLOWED_GROUPS=null    -> falsy at auth_views.py:238, so the group
-#                                    allow-list stops filtering and every IdP
-#                                    user may log in.
-#   * OIDC_ADMIN_GROUPS="admins"  -> truthy at auth_views.py:291, where
-#                                    set("admins") is a set of CHARACTERS, so
-#                                    any group sharing one letter grants admin.
-# Validate into a variable before jq ever sees the value.
-#
-# The `VAR=$(...)` form is load-bearing: a failing command substitution in a
-# plain assignment makes the assignment fail, which errexit turns into an
-# abort. The same substitution used inline in an argument list (jq --argjson x
-# "$(require_bool ...)") does NOT abort — the exit status belongs to jq.
-
-require_bool() {   # $1=name $2=value — value must be exactly true|false
-    case "$2" in
-        true|false) printf '%s' "$2" ;;
-        *) printf 'FATAL: %s must be exactly "true" or "false" (got %d bytes)\n' "$1" "${#2}" >&2; exit 1 ;;
-    esac
-}
-
-require_string_array() {  # $1=name $2=value — JSON array of strings
-    printf '%s' "$2" | jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null \
-        || { printf 'FATAL: %s must be a JSON array of strings, e.g. ["group1"]\n' "$1" >&2; exit 1; }
-    printf '%s' "$2"
-}
-
-require_nonempty() {  # $1=name $2=value — must not be the empty string
-    if [ -z "$2" ]; then
-        printf 'FATAL: %s must be set and non-empty\n' "$1" >&2
-        exit 1
-    fi
-    printf '%s' "$2"
-}
-
-# Values that land in the DSN but must NOT be percent-encoded (see the DSN
-# section below) are constrained by character class instead. That keeps the
-# anti-injection property — nothing that could add a URI delimiter, a query
-# parameter or a host gets through — without the round-trip corruption that
-# encoding would introduce.
-require_charset() {  # $1=name $2=value $3=allowed-character-class $4=human description
-    case "$2" in
-        *[!$3]*)
-            printf 'FATAL: %s may contain only %s (got %d bytes)\n' "$1" "$4" "${#2}" >&2
-            exit 1 ;;
-    esac
-    printf '%s' "$2"
-}
+# require_bool / require_string_array / require_nonempty / require_charset all
+# live in validators.sh so there is exactly one definition of each, shared with
+# entrypoint-daemon.sh. The calling convention — each validator is the entire
+# right-hand side of its own assignment, never nested inside another's argument
+# list — is documented there and is load-bearing.
+# shellcheck disable=SC1091  # installed alongside this script by the Dockerfile; not resolvable at lint time
+source /home/allsky/validators.sh
 
 
 # --- database connection ----------------------------------------------------
@@ -110,21 +68,41 @@ DB_SSL="$(require_bool INDIALLSKY_MARIADB_SSL "${INDIALLSKY_MARIADB_SSL:-false}"
 # Character classes for the DSN components that are validated rather than
 # encoded. Deliberately narrow: they describe what MariaDB and DNS actually
 # accept, not what a URI could carry.
-DB_NAME_CHARS='a-zA-Z0-9_$'                 # MariaDB unquoted identifier
+# Hyphen included deliberately: 'indi-allsky' is the chart's own name and the
+# most likely schema name an operator picks. Verified safe through this exact
+# stack — hyphen is URI-unreserved (RFC 3986), make_url keeps it literal, and
+# mysqlconnector round-trips it against MariaDB 11.
+DB_NAME_CHARS='a-zA-Z0-9_$-'                # MariaDB identifier; trailing - is literal in the class
 DB_HOST_CHARS='a-zA-Z0-9.:_-'               # hostname, IPv4, or bare IPv6
 DB_PORT_CHARS='0-9'
+DB_CHARSET_CHARS='a-zA-Z0-9_'               # charset / collation names
 
-DB_NAME="$(require_charset MARIADB_DATABASE \
-    "$(require_nonempty MARIADB_DATABASE "${MARIADB_DATABASE:-}")" \
-    "$DB_NAME_CHARS" 'letters, digits, underscore and $')"
-DB_HOST="$(require_charset INDIALLSKY_MARIADB_HOST \
-    "$(require_nonempty INDIALLSKY_MARIADB_HOST "${INDIALLSKY_MARIADB_HOST:-}")" \
+# Two validators per value, SEQUENCED — never nested. Nesting them
+# (require_charset NAME "$(require_nonempty ...)") is the precise hazard the
+# header comment above describes: the inner exit terminates only its own
+# command substitution, so the outer call receives "" and the enclosing
+# assignment still succeeds. Each validator must therefore be the whole
+# right-hand side of its own assignment, so errexit sees its status.
+DB_NAME="$(require_nonempty MARIADB_DATABASE "${MARIADB_DATABASE:-}")"
+DB_NAME="$(require_charset MARIADB_DATABASE "$DB_NAME" \
+    "$DB_NAME_CHARS" 'letters, digits, underscore, hyphen and $')"
+
+DB_HOST="$(require_nonempty INDIALLSKY_MARIADB_HOST "${INDIALLSKY_MARIADB_HOST:-}")"
+DB_HOST="$(require_charset INDIALLSKY_MARIADB_HOST "$DB_HOST" \
     "$DB_HOST_CHARS" 'hostname characters (letters, digits, dot, colon, hyphen, underscore)')"
+
 DB_PORT="$(require_charset INDIALLSKY_MARIADB_PORT "${INDIALLSKY_MARIADB_PORT:-3306}" \
     "$DB_PORT_CHARS" 'digits')"
 
-DB_CHARSET="${INDIALLSKY_MARIADB_CHARSET:-utf8mb4}"
-DB_COLLATION="${INDIALLSKY_MARIADB_COLLATION:-utf8mb4_unicode_ci}"
+# Charset and collation are interpolated into the DSN QUERY STRING, so without
+# validation they can append arbitrary parameters and silently rewrite the
+# connection: CHARSET='utf8mb4&ssl_verify_identity=false&x=y' parsed as
+# ssl_verify_identity=false, turning off certificate hostname verification on
+# an SSL connection. The class below cannot express '&' or '=' at all.
+DB_CHARSET="$(require_charset INDIALLSKY_MARIADB_CHARSET "${INDIALLSKY_MARIADB_CHARSET:-utf8mb4}" \
+    "$DB_CHARSET_CHARS" 'letters, digits and underscore')"
+DB_COLLATION="$(require_charset INDIALLSKY_MARIADB_COLLATION "${INDIALLSKY_MARIADB_COLLATION:-utf8mb4_unicode_ci}" \
+    "$DB_CHARSET_CHARS" 'letters, digits and underscore')"
 
 # Percent-encode the URI USERINFO — and only the userinfo. Deliberate
 # divergence from upstream docker/start_gunicorn.sh, which interpolates it

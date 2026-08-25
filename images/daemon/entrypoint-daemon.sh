@@ -28,23 +28,18 @@ DEFAULT_DARK_MODE="average"
 
 
 # The two dark-capture booleans were the last loose ones in the repo. Every
-# other boolean goes through render-flask-config.sh's require_bool and rejects
-# `True` by name, and a mode switch that silently reinterprets a typo is a bad
-# contract even when it cannot corrupt anything: DAYTIME=True previously
-# captured --no-daytime darks without a word. Same strict pattern, same
-# byte-count-only message.
+# boolean in these images now goes through the SAME require_bool — one
+# definition, in validators.sh — and rejects `True` by name. A mode switch that
+# silently reinterprets a typo is a bad contract even when it cannot corrupt
+# anything: DAYTIME=True previously captured --no-daytime darks without a word.
 #
 # Validated here, at the top, rather than at the branch that consumes them:
 # they depend on nothing but the environment, and unlike the seeding guards in
 # migrate.sh there is no question of whether they apply — the branch is taken
 # unconditionally. So a typo fails in about a second instead of after the
 # readiness gate.
-require_bool() {   # $1=name $2=value — value must be exactly true|false
-    case "$2" in
-        true|false) printf '%s' "$2" ;;
-        *) printf 'FATAL: %s must be exactly "true" or "false" (got %d bytes)\n' "$1" "${#2}" >&2; exit 1 ;;
-    esac
-}
+# shellcheck disable=SC1091  # installed alongside this script by the Dockerfile; not resolvable at lint time
+source /home/allsky/validators.sh
 
 DARK_CAPTURE_ENABLE="$(require_bool INDIALLSKY_DARK_CAPTURE_ENABLE "${INDIALLSKY_DARK_CAPTURE_ENABLE:-false}")"
 DARK_CAPTURE_DAYTIME="$(require_bool INDIALLSKY_DARK_CAPTURE_DAYTIME "${INDIALLSKY_DARK_CAPTURE_DAYTIME:-true}")"
