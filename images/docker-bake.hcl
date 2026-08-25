@@ -8,9 +8,9 @@ variable "CAMERA_VENDOR"         { default = "supported" }
 # local builds). Cache refs embed the target name — <CACHE_REGISTRY>:<target>-
 # <arch> — because a single shared ref would let each finishing target
 # overwrite the previous target's cache export: indiserver exports after
-# base, so base's expensive INDI compile would never stay cached. New
-# targets (A3: daemon, web) inherit the scheme by calling
-# cache_from()/cache_to() with their own name.
+# base, so base's expensive INDI compile would never stay cached. Every
+# target — intermediates included — calls cache_from()/cache_to() with its
+# own name; passing any other target's name re-introduces that overwrite.
 variable "CACHE_REGISTRY" { default = "" } # e.g. ghcr.io/jaxzin/indi-allsky-cache
 variable "CACHE_ARCH"     { default = "" } # amd64 | arm64
 variable "CACHE_WRITE"    { default = "" } # "true" only on pushes to main
@@ -31,8 +31,9 @@ function "cache_to" {
 # carries the image name inside the output instead — the merge job attaches
 # the real tags when it assembles the multi-arch manifest lists. Unset (local
 # builds, bake --print lint job), targets keep their normal tags and default
-# outputs. New targets (A3: daemon, web) inherit the scheme by calling both
-# helpers with their own name; `base` calls neither and is never pushed.
+# outputs. Every published target calls both helpers with its own name; the
+# intermediates (`base`, `daemon-upstream`, `web-upstream`) call neither and
+# are never pushed.
 variable "PUSH_BY_DIGEST" { default = "" } # "true" in CI build jobs
 
 function "publish_tags" {
@@ -46,7 +47,7 @@ function "publish_output" {
 }
 
 group "default" {
-  targets = ["indiserver"] # A3 appends "daemon", "web"
+  targets = ["indiserver", "daemon", "web"]
 }
 
 # Intermediate INDI core build, consumed by later targets via the
@@ -79,4 +80,59 @@ target "indiserver" {
   cache-to   = cache_to("indiserver")
   tags       = publish_tags("indiserver")
   output     = publish_output("indiserver")
+}
+
+# Upstream capture image. Consumes the "indi.base" named context (see
+# upstream docker/Dockerfile.capture:1). Intermediate: cache helpers with its
+# own name, no tags, no publish helpers — same discipline as `base`.
+target "daemon-upstream" {
+  context    = "upstream"
+  dockerfile = "docker/Dockerfile.capture"
+  contexts   = { "indi.base" = "target:base" }
+  cache-from = cache_from("daemon-upstream")
+  cache-to   = cache_to("daemon-upstream")
+}
+
+# Upstream gunicorn image. FROM python:3.13-slim — does NOT consume indi.base
+# (upstream docker/Dockerfile.gunicorn:1). It DOES declare ARG TZ (consumed for
+# /etc/localtime), so TZ must be passed. Dockerfile.capture declares no ARG TZ
+# (TZ is baked by `base`), so daemon-upstream deliberately passes none.
+target "web-upstream" {
+  context    = "upstream"
+  dockerfile = "docker/Dockerfile.gunicorn"
+  args       = { TZ = "UTC" }
+  cache-from = cache_from("web-upstream")
+  cache-to   = cache_to("web-upstream")
+}
+
+target "daemon" {
+  context    = "images"
+  dockerfile = "daemon/Dockerfile"
+  contexts   = { "daemon.upstream" = "target:daemon-upstream" }
+  labels = {
+    "org.opencontainers.image.source" = "https://github.com/jaxzin/indi-allsky-helm"
+    # Deliberately differs from indiserver's plain "GPL-3.0-only": this image
+    # also carries this repo's own Apache-2.0 entrypoint and config-rendering
+    # scripts, which NOTICE records. The label and NOTICE must agree.
+    "org.opencontainers.image.licenses" = "GPL-3.0-only AND Apache-2.0"
+  }
+  cache-from = cache_from("daemon")
+  cache-to   = cache_to("daemon")
+  tags       = publish_tags("daemon")
+  output     = publish_output("daemon")
+}
+
+target "web" {
+  context    = "images"
+  dockerfile = "web/Dockerfile"
+  contexts   = { "web.upstream" = "target:web-upstream" }
+  labels = {
+    "org.opencontainers.image.source" = "https://github.com/jaxzin/indi-allsky-helm"
+    # As with daemon: this image ships this repo's Apache-2.0 scripts too.
+    "org.opencontainers.image.licenses" = "GPL-3.0-only AND Apache-2.0"
+  }
+  cache-from = cache_from("web")
+  cache-to   = cache_to("web")
+  tags       = publish_tags("web")
+  output     = publish_output("web")
 }
