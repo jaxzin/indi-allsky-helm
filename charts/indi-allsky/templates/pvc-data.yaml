@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-data
+  name: {{ include "indi-allsky.dataPvcName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
   accessModes: {{- toYaml .Values.storage.data.accessModes | nindent 4 }}
