@@ -54,15 +54,17 @@ jobs:
       - name: Bake and push by digest
         env:
           ARCH: ${{ matrix.arch }}
-          # Per-target registry cache refs — scheme and rationale live in
-          # images/docker-bake.hcl. Reads always on; writes main-only.
+          # Digest publishing and per-target registry cache refs are both
+          # defined in images/docker-bake.hcl — see the comments there.
+          # PUSH_BY_DIGEST clears the tags HCL-side: buildx refuses to push
+          # a tagged ref by digest. Cache reads always on; writes main-only.
+          PUSH_BY_DIGEST: "true"
           CACHE_REGISTRY: ${{ env.REGISTRY }}/indi-allsky-cache
           CACHE_ARCH: ${{ matrix.arch }}
           CACHE_WRITE: ${{ github.ref == 'refs/heads/main' }}
         run: |
           docker buildx bake -f images/docker-bake.hcl \
             --set "*.platform=linux/${ARCH}" \
-            --set "*.output=type=image,push-by-digest=true,push=true,name-canonical=true" \
             --metadata-file "bake-meta-${ARCH}.json"
 
       - uses: actions/upload-artifact@v7

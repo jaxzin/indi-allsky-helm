@@ -25,6 +25,26 @@ function "cache_to" {
   result = CACHE_REGISTRY == "" || CACHE_WRITE != "true" ? [] : ["type=registry,ref=${CACHE_REGISTRY}:${target}-${CACHE_ARCH},mode=max"]
 }
 
+# Digest publishing (CI build jobs set PUSH_BY_DIGEST=true): buildx refuses
+# to push-by-digest a target that still carries tags ("can't push tagged ref
+# ... by digest"), so publish_tags() clears the tags and publish_output()
+# carries the image name inside the output instead — the merge job attaches
+# the real tags when it assembles the multi-arch manifest lists. Unset (local
+# builds, bake --print lint job), targets keep their normal tags and default
+# outputs. New targets (A3: daemon, web) inherit the scheme by calling both
+# helpers with their own name; `base` calls neither and is never pushed.
+variable "PUSH_BY_DIGEST" { default = "" } # "true" in CI build jobs
+
+function "publish_tags" {
+  params = [target]
+  result = PUSH_BY_DIGEST == "true" ? [] : ["${REGISTRY}/indi-allsky-${target}:${TAG}"]
+}
+
+function "publish_output" {
+  params = [target]
+  result = PUSH_BY_DIGEST != "true" ? [] : ["type=image,name=${REGISTRY}/indi-allsky-${target},push-by-digest=true,name-canonical=true,push=true"]
+}
+
 group "default" {
   targets = ["indiserver"] # A3 appends "daemon", "web"
 }
@@ -57,5 +77,6 @@ target "indiserver" {
   }
   cache-from = cache_from("indiserver")
   cache-to   = cache_to("indiserver")
-  tags       = ["${REGISTRY}/indi-allsky-indiserver:${TAG}"]
+  tags       = publish_tags("indiserver")
+  output     = publish_output("indiserver")
 }
