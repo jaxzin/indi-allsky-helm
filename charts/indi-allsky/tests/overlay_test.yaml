@@ -1,0 +1,59 @@
+suite: separate application config overlay
+values:
+  - a5-values.yaml
+templates:
+  - configmap-overlay.yaml
+release:
+  name: test-release
+tests:
+  - it: renders a canonical overlay with chart-managed values
+    asserts:
+      - equal:
+          path: metadata.annotations["indi-allsky.io/overlay-checksum"]
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"INDI_SERVER": "localhost"'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"INDI_PORT": 7624'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"IMAGE_FOLDER": "/var/www/html/allsky/images"'
+
+  - it: deep merges unmanaged settings while managed values win
+    set:
+      appConfig.MQTTPUBLISH.HOST: mqtt.example.com
+      appConfig.MQTTPUBLISH.PORT: 8883
+      appConfig.INDI_SERVER: ignored.example.com
+      appConfig.INDI_PORT: 9999
+      appConfig.IMAGE_FOLDER: /tmp/ignored
+    asserts:
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"HOST": "mqtt.example.com"'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"PORT": 8883'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"INDI_SERVER": "localhost"'
+      - notMatchRegex:
+          path: data["config-overlay.json"]
+          pattern: ignored.example.com
+
+  - it: renders an external INDI endpoint into the managed overlay
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: 17624
+    asserts:
+      - equal:
+          path: metadata.annotations["indi-allsky.io/overlay-checksum"]
+          value: 8f679d39245b902c0a11607c12d7ffbf353232ff1eae79f6174b700c7e8c474d
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"INDI_SERVER": "indi.example.com"'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"INDI_PORT": 17624'

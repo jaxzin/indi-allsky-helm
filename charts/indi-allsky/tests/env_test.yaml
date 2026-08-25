@@ -1,0 +1,226 @@
+suite: application environment ConfigMap
+values:
+  - a5-values.yaml
+templates:
+  - configmap-env.yaml
+release:
+  name: test-release
+tests:
+  - it: renders the complete plain runtime contract without forwarded proxy trust
+    asserts:
+      - equal:
+          path: data.TZ
+          value: UTC
+      - equal:
+          path: data.INDIALLSKY_MARIADB_HOST
+          value: test-release-indi-allsky-mariadb
+      - equal:
+          path: data.INDIALLSKY_MARIADB_PORT
+          value: "3306"
+      - equal:
+          path: data.INDIALLSKY_MARIADB_SSL
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_MARIADB_CHARSET
+          value: utf8mb4
+      - equal:
+          path: data.INDIALLSKY_MARIADB_COLLATION
+          value: utf8mb4_unicode_ci
+      - equal:
+          path: data.MARIADB_USER
+          value: indi_allsky
+      - equal:
+          path: data.MARIADB_DATABASE
+          value: indi_allsky
+      - equal:
+          path: data.INDIALLSKY_IMAGE_FOLDER
+          value: /var/www/html/allsky/images
+      - equal:
+          path: data.INDIALLSKY_MIGRATION_FOLDER
+          value: /var/www/html/allsky/.state/migrations
+      - equal:
+          path: data.INDIALLSKY_BACKUP_DIR
+          value: /var/www/html/.state/backups
+      - equal:
+          path: data.INDIALLSKY_PRE_MIGRATE_DUMP
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_PRE_MIGRATE_DUMP_KEEP
+          value: "8"
+      - equal:
+          path: data.INDIALLSKY_FLASK_AUTH_ALL_VIEWS
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_FLASK_SESSION_COOKIE_SECURE
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_ADMIN_NETWORKS
+          value: "[]"
+      - equal:
+          path: data.INDIALLSKY_OIDC_ENABLE
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_OIDC_PROVIDER_NAME
+          value: ""
+      - equal:
+          path: data.INDIALLSKY_OIDC_USERNAME_CLAIM
+          value: preferred_username
+      - equal:
+          path: data.INDIALLSKY_OIDC_ALLOWED_GROUPS
+          value: "[]"
+      - equal:
+          path: data.INDIALLSKY_OIDC_ADMIN_GROUPS
+          value: "[]"
+      - equal:
+          path: data.INDIALLSKY_OIDC_AUTO_LOGIN
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_LOCAL_AUTH_ENABLE
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY
+          value: /etc/indi-allsky-overlay/config-overlay.json
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+          value: /var/www/html/.state/config-overlay.applied
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_ENABLE
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_DAYTIME
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_BITMAX
+          value: "16"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_MODE
+          value: average
+      - notExists:
+          path: data.FORWARDED_ALLOW_IPS
+
+  - it: renders optional OIDC admin and capture values with JSON arrays
+    set:
+      oidc.enabled: true
+      oidc.clientId: test-client
+      oidc.clientSecret: test-client-secret
+      oidc.discoveryEndpoint: https://idp.example.com/.well-known/openid-configuration
+      oidc.allowedGroups:
+        - observers
+      oidc.adminGroups:
+        - administrators
+      web.adminNetworks:
+        - 192.0.2.0/24
+      adminUser.username: admin
+      adminUser.name: Chart Admin
+      adminUser.email: admin@example.com
+      credentials.adminPassword: test-admin-password
+      edge.captureTmpDir: /var/www/html/.state/capture-tmp
+      edge.darks.enabled: true
+      edge.darks.daytime: false
+      edge.darks.bitmax: 12
+      edge.darks.mode: sigmaclip
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_OIDC_CLIENT_ID
+          value: test-client
+      - equal:
+          path: data.INDIALLSKY_OIDC_DISCOVERY_ENDPOINT
+          value: https://idp.example.com/.well-known/openid-configuration
+      - equal:
+          path: data.INDIALLSKY_OIDC_ALLOWED_GROUPS
+          value: '["observers"]'
+      - equal:
+          path: data.INDIALLSKY_OIDC_ADMIN_GROUPS
+          value: '["administrators"]'
+      - equal:
+          path: data.INDIALLSKY_ADMIN_NETWORKS
+          value: '["192.0.2.0/24"]'
+      - equal:
+          path: data.INDIALLSKY_WEB_USER
+          value: admin
+      - equal:
+          path: data.INDIALLSKY_WEB_NAME
+          value: Chart Admin
+      - equal:
+          path: data.INDIALLSKY_WEB_EMAIL
+          value: admin@example.com
+      - equal:
+          path: data.CAPTURE_TMPDIR
+          value: /var/www/html/.state/capture-tmp
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_ENABLE
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_DAYTIME
+          value: "false"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_BITMAX
+          value: "12"
+      - equal:
+          path: data.INDIALLSKY_DARK_CAPTURE_MODE
+          value: sigmaclip
+
+  - it: renders approved external database settings and no internal root inputs
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.port: 3307
+      externalDatabase.database: allsky_external
+      externalDatabase.username: allsky_external_user
+      externalDatabase.ssl: true
+      externalDatabase.charset: utf8mb3
+      externalDatabase.collation: utf8mb3_general_ci
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_MARIADB_HOST
+          value: db.example.com
+      - equal:
+          path: data.INDIALLSKY_MARIADB_PORT
+          value: "3307"
+      - equal:
+          path: data.INDIALLSKY_MARIADB_SSL
+          value: "true"
+      - equal:
+          path: data.INDIALLSKY_MARIADB_CHARSET
+          value: utf8mb3
+      - equal:
+          path: data.INDIALLSKY_MARIADB_COLLATION
+          value: utf8mb3_general_ci
+      - equal:
+          path: data.MARIADB_USER
+          value: allsky_external_user
+      - equal:
+          path: data.MARIADB_DATABASE
+          value: allsky_external
+
+  - it: changes the exact checksum when an unmanaged overlay key changes
+    set:
+      appConfig.MQTTPUBLISH.HOST: mqtt.example.com
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
+          value: 78290d481fcd2ea8ea27984a0aaf9e90a82946af1c32d9fa4c9002379885b7af
+
+  - it: ignores attempted overrides of chart-managed overlay keys in the checksum
+    set:
+      appConfig.INDI_SERVER: ignored.example.com
+      appConfig.INDI_PORT: 9999
+      appConfig.IMAGE_FOLDER: /tmp/ignored
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+
+  - it: changes the exact checksum when the managed external INDI endpoint changes
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: 17624
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
+          value: 8f679d39245b902c0a11607c12d7ffbf353232ff1eae79f6174b700c7e8c474d
