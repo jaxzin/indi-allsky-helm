@@ -33,12 +33,22 @@ RUN apt-get update \
     && apt-get autoremove -y --purge \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# migrate.sh's guard depends on `flask db check`. Upstream's floor (>=4.0.5)
-# already provides it; this restates the dependency explicitly so a future
-# upstream floor change cannot silently remove the guard. No-op when the
+# migrate.sh's guarded-migration branch depends on `flask db check`.
+#
+# Two separate facts, easily conflated: `check` exists from Flask-Migrate
+# 4.0.5 — which is already upstream's declared floor — so 4.0.6 is NOT the
+# earliest version carrying the guard. The floor value here comes from the
+# binding acceptance criterion on issue #2, which specifies >=4.0.6; that
+# criterion governs, and a conservative margin of one patch release above the
+# earliest supporting version is a reasonable thing for it to ask for.
+#
+# The pin's purpose is to state the dependency explicitly, so a future change
+# to upstream's floor cannot silently remove the guard. No-op whenever the
 # resolved version already satisfies it.
 RUN /home/allsky/venv/bin/pip install --no-cache-dir 'Flask-Migrate>=4.0.6'
 
+# validators.sh is sourced, never executed, so it is not marked executable.
+COPY --chown=10001:10001 --chmod=644 shared/validators.sh /home/allsky/
 COPY --chown=10001:10001 --chmod=755 \
     shared/render-flask-config.sh web/entrypoint-web.sh web/migrate.sh \
     /home/allsky/
