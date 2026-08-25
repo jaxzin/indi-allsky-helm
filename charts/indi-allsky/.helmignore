@@ -1,0 +1,14 @@
+# Keep unit tests and CI-only values out of the packaged chart.
+tests/
+ci/
+# Standard junk
+.DS_Store
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~

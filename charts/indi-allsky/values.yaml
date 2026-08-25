@@ -1,0 +1,180 @@
+image:
+  registry: ghcr.io/jaxzin
+  tag: ""          # defaults to .Chart.AppVersion
+  # Optional per-image digest pins (architect review 2026-08-20): when set, the
+  # reference becomes repo@sha256:… and `tag` is ignored for that image. Tags are
+  # mutable; digests are the supply-chain control for the privileged edge pod.
+  # Each chart release publishes its image digests in the release notes.
+  digests:
+    indiserver: ""
+    daemon: ""
+    web: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+nodeContract:
+  cameraLabel: indi-allsky.io/camera
+  sensorsLabel: indi-allsky.io/sensors
+
+edge:
+  priorityClass:
+    create: true
+    value: 1000000
+  # Guaranteed QoS: set requests == limits (documented; not enforced)
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  tolerations: []
+  podAnnotations: {}       # e.g. Reloader annotations so credential rotation rolls the pod
+  # gids granted in hostpath devices mode for /dev access (dialout, gpio, i2c on
+  # Raspberry Pi OS/Debian defaults) — adjust to your node OS's group ids
+  supplementalGroups: [20, 997, 998]
+  # Optional capture-freshness liveness: restarts the pod when latest.jpg goes
+  # stale (missing file counts as stale — deliberately fail-closed, so do NOT
+  # enable before the first frame exists). OFF by default — long exposures,
+  # disabled daytime capture, or darks mode make a static threshold false-positive;
+  # enable with a maxAgeSeconds comfortably above your longest capture cadence.
+  freshnessProbe:
+    enabled: false
+    maxAgeSeconds: 900
+  sensors:
+    enabled: true          # adds sensorsLabel to nodeSelector; mounts sensor devices
+  devices:
+    mode: hostpath         # hostpath | device-plugin | none
+    camera:
+      hostPaths: ["/dev/bus/usb"]
+      resources: {}        # device-plugin mode, e.g. {squat.ai/asi-camera: 1}
+    sensors:
+      hostPaths: ["/dev/i2c-1", "/dev/gpiochip0", "/sys/bus/w1"]
+      resources: {}
+  darks:
+    enabled: false         # runs darks.py instead of capture (maintenance mode)
+
+indiserver:
+  mode: sidecar            # sidecar | external
+  ccdDriver: indi_simulator_ccd
+  gpsDriver: ""
+  external:
+    host: ""
+    port: 7624
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+web:
+  # replicas is intentionally not exposed: migrations + config seeding assume 1
+  nodeSelector: {}
+  podAnnotations: {}       # e.g. Reloader annotations for credential rotation
+  nginx:
+    # The static/proxy sidecar image — a values key so it can be digest-pinned,
+    # mirrored, or CVE-patched without forking the chart (security review
+    # 2026-08-20: this container terminates ingress traffic and mounts the data PVC).
+    image: nginx:1.29-alpine
+  resources: {}
+  authAllViews: false
+  service:
+    port: 8080
+  ingress:
+    enabled: false
+    className: ""
+    host: allsky.example.com
+    annotations: {}
+    tls: []                # optional; omit when the cluster has a default cert
+
+# Deep-merged over the app's DB config by the migrate initContainer on each
+# deploy. Keys here are GitOps-owned; everything else stays UI-owned.
+# INDI_SERVER / INDI_PORT / IMAGE_FOLDER are chart-managed — do not set here.
+appConfig: {}
+
+migrations:
+  # Take a mariadb-dump before any schema-mutating migration (guarded parity,
+  # 2026-08-20). Disable ONLY for external databases with least-privilege users
+  # and DBA-managed backups — you are then accepting unguarded autogenerate DDL.
+  preMigrateDump: true
+
+oidc:
+  enabled: false
+  providerName: ""
+  clientId: ""
+  clientSecret: ""         # dev only — prefer credentials.existingSecret
+  discoveryEndpoint: ""
+  usernameClaim: preferred_username
+  allowedGroups: []
+  adminGroups: []
+  autoLogin: false
+  # Renders/hides the local username+password login form. Upstream keeps the POST
+  # handler active regardless — but when this is false the chart seeds no local
+  # admin (see adminUser), so no local credential exists to use against it.
+  localAuth: true
+
+# Local admin seeded only when oidc.localAuth is true AND adminUser.username set
+adminUser:
+  username: ""
+  name: "Admin"
+  email: "admin@example.com"
+
+credentials:
+  # Either provide an existingSecret with the keys below, or set inline values (dev only).
+  # Required keys: INDIALLSKY_FLASK_SECRET_KEY, INDIALLSKY_FLASK_PASSWORD_KEY, MARIADB_PASSWORD.
+  # Optional keys: INDIALLSKY_OIDC_CLIENT_ID, INDIALLSKY_OIDC_CLIENT_SECRET,
+  #   INDIALLSKY_OIDC_DISCOVERY_ENDPOINT, INDIALLSKY_WEB_PASS.
+  # Mechanism: pods use envFrom [ConfigMap, Secret] in that order, so a key present in
+  # the Secret wins over / completes what the ConfigMap renders from plain values —
+  # OIDC client id and discovery endpoint may therefore live in either place.
+  existingSecret: ""
+  flaskSecretKey: ""
+  flaskPasswordKey: ""     # Fernet key — losing it makes stored app passwords unrecoverable
+  mariadbPassword: ""
+  adminPassword: ""
+
+storage:
+  data:
+    # RWX required whenever edge and web can land on different nodes
+    existingClaim: ""
+    storageClassName: ""
+    accessModes: [ReadWriteMany]
+    size: 100Gi
+
+mariadb:
+  enabled: true
+  image: mariadb:11.8
+  database: indi_allsky
+  username: indi_allsky
+  nodeSelector: {}
+  resources: {}
+  persistence:
+    storageClassName: ""
+    size: 8Gi
+  backup:
+    enabled: false
+    schedule: "20 4 * * *"
+    retentionDays: 14
+
+externalDatabase:
+  host: ""
+  port: 3306
+  database: indi_allsky
+  username: indi_allsky
+
+mosquitto:
+  enabled: false
+  image: eclipse-mosquitto:2.0
+  resources: {}
+
+timezone: UTC
+
+discovery:
+  nfd:
+    # Requires Node Feature Discovery installed in the cluster. NFD's usb source
+    # only reports device classes in its deviceClassWhitelist — you may need to
+    # extend the NFD worker config for your camera. See docs/node-contract.md.
+    enabled: false
+    usbVendorIds: ["03c3", "1618"]   # ZWO, QHY — extend via values
