@@ -26,6 +26,30 @@ BOOTSTRAP_WAIT_LOG_EVERY=12
 DEFAULT_DARK_BITMAX="16"
 DEFAULT_DARK_MODE="average"
 
+
+# The two dark-capture booleans were the last loose ones in the repo. Every
+# other boolean goes through render-flask-config.sh's require_bool and rejects
+# `True` by name, and a mode switch that silently reinterprets a typo is a bad
+# contract even when it cannot corrupt anything: DAYTIME=True previously
+# captured --no-daytime darks without a word. Same strict pattern, same
+# byte-count-only message.
+#
+# Validated here, at the top, rather than at the branch that consumes them:
+# they depend on nothing but the environment, and unlike the seeding guards in
+# migrate.sh there is no question of whether they apply — the branch is taken
+# unconditionally. So a typo fails in about a second instead of after the
+# readiness gate.
+require_bool() {   # $1=name $2=value — value must be exactly true|false
+    case "$2" in
+        true|false) printf '%s' "$2" ;;
+        *) printf 'FATAL: %s must be exactly "true" or "false" (got %d bytes)\n' "$1" "${#2}" >&2; exit 1 ;;
+    esac
+}
+
+DARK_CAPTURE_ENABLE="$(require_bool INDIALLSKY_DARK_CAPTURE_ENABLE "${INDIALLSKY_DARK_CAPTURE_ENABLE:-false}")"
+DARK_CAPTURE_DAYTIME="$(require_bool INDIALLSKY_DARK_CAPTURE_DAYTIME "${INDIALLSKY_DARK_CAPTURE_DAYTIME:-true}")"
+
+
 # Fails fast (non-zero) on a missing or malformed setting, naming the variable.
 /home/allsky/render-flask-config.sh
 
@@ -98,14 +122,14 @@ fi
 export INDIALLSKY_DOCKER=1
 
 
-if [ "${INDIALLSKY_DARK_CAPTURE_ENABLE:-false}" == "true" ]; then
+if [ "$DARK_CAPTURE_ENABLE" == "true" ]; then
     echo "*** Starting dark frame capture ***"
     # darks.py expresses daytime as a --daytime/--no-daytime flag pair, not a
     # positional (it takes exactly one positional: the mode). Build argv
     # explicitly so an unset value can never become an empty positional and
     # fail argparse — which is what upstream's start_indi_allsky.sh does.
     darks_args=(--bitmax "${INDIALLSKY_DARK_CAPTURE_BITMAX:-$DEFAULT_DARK_BITMAX}")
-    if [ "${INDIALLSKY_DARK_CAPTURE_DAYTIME:-true}" == "true" ]; then
+    if [ "$DARK_CAPTURE_DAYTIME" == "true" ]; then
         darks_args+=(--daytime)
     else
         darks_args+=(--no-daytime)
