@@ -41,11 +41,13 @@ purged, not just its sudoers policy, so the setuid binary is gone too.
 | `/home/allsky/indi-allsky` | the upstream checkout; **every** `flask`, `config.py` and `usertool.py` call must run from here (upstream ships no `FLASK_APP`, so the app is discovered from `./app.py`) | image |
 | `/home/allsky/venv` | the Python virtualenv; `python3` outside it is the system interpreter and cannot import `indi_allsky` | image |
 | `/etc/indi-allsky/flask.json` | rendered at every container start, mode `0600` | entrypoint |
-| `/etc/indi-allsky/config-overlay.json` | optional GitOps config overlay | chart ConfigMap |
-| `/var/www/html/allsky` | the shared data volume | chart PVC |
+| `/etc/indi-allsky-overlay/config-overlay.json` | optional GitOps config overlay on a separate projected ConfigMap volume | chart ConfigMap |
+| `/var/www/html` | shared PVC parent mount | chart PVC |
+| `/var/www/html/allsky` | application subtree under the shared parent | chart + entrypoints |
 | `/var/www/html/allsky/images` | captured images | created by `migrate.sh` / `entrypoint-daemon.sh` |
 | `/var/www/html/allsky/.state/migrations` | Alembic migration tree | `flask db init` |
-| `/var/www/html/allsky/.state/backups` | pre-migration database dumps | `migrate.sh` |
+| `/var/www/html/.state/backups` | sibling backup directory outside the application/nginx docroot | `migrate.sh` + scheduled backup CronJob |
+| `/var/www/html/.state/config-overlay.applied` | exact applied-overlay checksum sentinel | web migration initContainer |
 
 Upstream keeps migrations in `/var/lib/indi-allsky`, which is a per-container
 `VOLUME` in its compose stack and therefore not shared. On Kubernetes the
@@ -55,21 +57,20 @@ disagree about the schema history. Revisions are generated at runtime
 
 ## Requirements on the chart
 
-1. **MUST mount an emptyDir at `/etc/indi-allsky`** in every pod running
+1. **MUST mount a memory-backed emptyDir at `/etc/indi-allsky`** in every pod running
    either image. Both entrypoints render `flask.json` there. Upstream ships
    the directory `0750` owned by `allsky`, but any Kubernetes volume mounted
-   at that path shadows it with a root-owned one.
-   *(Whether that emptyDir is `medium: Memory` is a chart-side choice: memory
-   keeps the rendered secrets off the node's disk, at the cost of counting
-   against the pod's memory limit. The image works either way.)*
+   at that path shadows it with a root-owned one. `medium: Memory` keeps the
+   rendered database URI and application keys off node disk.
 2. **MUST set `securityContext.fsGroup: 10001`** on every pod that mounts
    `/etc/indi-allsky` or the data PVC. Verified empirically: with a root-owned
    `0755` mount the render step dies with
    `/etc/indi-allsky/.flask.json.tmp: Permission denied`; with gid `10001` and
    the group-write bit it renders.
-3. **MUST keep `/var/www/html/allsky` persistent and shared** across restarts
-   and across the web and daemon pods. `flask db upgrade head` cannot find
-   prior revisions without it.
+3. **MUST mount the shared PVC parent at `/var/www/html`**, keeping the
+   `/var/www/html/allsky` application subtree persistent across the web and
+   daemon pods while leaving backups in the sibling `/var/www/html/.state`.
+   `flask db upgrade head` cannot find prior revisions without the app subtree.
 4. **MUST run `migrate.sh` as the web pod's initContainer**, with **both**
    volumes mounted (`/etc/indi-allsky` and the data PVC) and the full database
    and seeding environment. It holds the database to itself: gunicorn and the
@@ -107,6 +108,11 @@ in pods, and pod logs are widely readable.
 | `INDIALLSKY_MARIADB_SSL` | `false` | boolean; `true` adds `ssl_ca` + `ssl_verify_identity` to the DSN |
 | `INDIALLSKY_MARIADB_CHARSET` | `utf8mb4` | connection charset. **Constrained:** letters, digits, `_`. |
 | `INDIALLSKY_MARIADB_COLLATION` | `utf8mb4_unicode_ci` | connection collation. **Constrained:** letters, digits, `_`. |
+
+The host contract deliberately admits bare IPv6, but the current image does
+not yet bracket it while constructing the SQLAlchemy URI. End-to-end bare-IPv6
+support is tracked in [issue #20](https://github.com/jaxzin/indi-allsky-helm/issues/20);
+use DNS or IPv4 until that image-layer fix lands.
 
 **The five "Constrained" rows are hard failures, not warnings.** Each of those
 values is interpolated into the database URI at a position SQLAlchemy does *not*
@@ -181,25 +187,14 @@ scope limit; the defaults are the usual ones.
 | `INDIALLSKY_WEB_PASS` | — | admin password; must be at least 8 characters |
 | `INDIALLSKY_WEB_NAME` | `Admin` | display name |
 | `INDIALLSKY_WEB_EMAIL` | `admin@example.com` | must match `^[^@]+@[^@]+\.[^@]+$` |
-| `INDIALLSKY_CONFIG_OVERLAY` | `/etc/indi-allsky/config-overlay.json` | overlay path; skipped when the file is absent. See the delivery note below — the default is inside the `/etc/indi-allsky` emptyDir. |
+| `INDIALLSKY_CONFIG_OVERLAY` | `/etc/indi-allsky/config-overlay.json` in the image; `/etc/indi-allsky-overlay/config-overlay.json` in this chart | overlay path; skipped when the file is absent |
+| `INDIALLSKY_CONFIG_OVERLAY_SHA256` | chart-generated | SHA-256 of the canonical compact overlay JSON payload |
+| `INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL` | `/var/www/html/.state/config-overlay.applied` in this chart | fixed sentinel carrying the exact checksum last applied successfully |
 
-**Overlay delivery needs a decision from the chart.** The default path is
-*inside* the emptyDir mounted at `/etc/indi-allsky`, and a ConfigMap cannot be
-mounted at a path inside another volume except via `subPath` — which has a
-consequential property: **`subPath` mounts do not receive ConfigMap updates.**
-Kubernetes updates projected ConfigMap files in place, but a `subPath` mount is
-resolved once at container start, so an edited ConfigMap never reaches the pod.
-Two options, both defensible:
-
-1. **Mount the ConfigMap somewhere else and repoint `INDIALLSKY_CONFIG_OVERLAY`**
-   at it (for example `/etc/indi-allsky-overlay/config-overlay.json` on its own
-   volume). The overlay then updates in place — though since `migrate.sh` only
-   reads it at start, a restart is still needed to *apply* it.
-2. **Accept `subPath` and restart-to-update**, which is honest for a GitOps
-   flow where a ConfigMap change triggers a rollout anyway.
-
-Option 1 is the cleaner default; the images support either, since the path is
-just an environment variable.
+The chart resolves overlay delivery by projecting the ConfigMap as its own
+volume at `/etc/indi-allsky-overlay`; it does not use `subPath`. Kubernetes can
+therefore update the projected file, while a pod restart remains necessary to
+run migration/bootstrap and apply that payload to the database.
 
 Seeding happens only when the database holds at most one account — the
 internal `system` user that bootstrap creates. It never overwrites a real one.
@@ -232,9 +227,12 @@ If `shareProcessNamespace: true` is ever set on the web pod, revisit this.
 | --- | --- | --- |
 | `INDIALLSKY_PRE_MIGRATE_DUMP` | `true` | boolean; **must be exactly `true` or `false`.** `false` is the only way to skip the pre-migration dump; anything else is a hard failure. A typo that silently skipped the backup and then mutated the schema would invert the safety property this script exists to provide. |
 | `INDIALLSKY_PRE_MIGRATE_DUMP_KEEP` | `8` | how many dumps to retain; must be a whole number ≥ 1 |
-| `INDIALLSKY_BACKUP_DIR` | `/var/www/html/allsky/.state/backups` | where dumps are written. See the note below — the default is inside the web docroot. |
+| `INDIALLSKY_BACKUP_DIR` | `/var/www/html/allsky/.state/backups` in the image; `/var/www/html/.state/backups` in this chart | persistent dump destination |
 
-**The default backup directory sits inside the nginx docroot.** `/var/www/html/allsky` is what the web server serves; `.state/backups` is a subdirectory of it, so a misconfigured or overly permissive web server could serve `pre-migrate_*.sql.gz` — full database dumps, including the `user` table — to anyone who can guess the path. Two mitigations, and the chart should use both: point `INDIALLSKY_BACKUP_DIR` at a path outside the docroot (a separate volume, or a sibling directory the web server does not root at), and add a deny rule for `.state/` to the web server config in A6. The dumps land there by default only because it is the one directory guaranteed to be persistent and writable in every deployment.
+The image default is inside the nginx docroot and is retained for standalone
+compatibility. The chart always overrides it to the sibling directory outside
+that docroot. A6 additionally denies dot paths and mounts only the images
+subtree into nginx; relocation and serving-side denial are independent layers.
 
 ### Capture daemon — `entrypoint-daemon.sh` only
 
@@ -260,7 +258,7 @@ contract regardless of the stakes.
 | --- | --- | --- |
 | `FORWARDED_ALLOW_IPS` | *unset by the image* | Read by **gunicorn itself**, not by these scripts. gunicorn's own default (`127.0.0.1,::1`) is correct for the chart's topology, where the only thing in front of gunicorn is a sidecar in the same pod. Set it from the chart only for a different topology — and never to `*` unless nothing untrusted can reach the pod directly. |
 | `INDIALLSKY_DOCKER` | set to `1` by both entrypoints | an output, not an input; upstream uses it to detect a container |
-| `TZ` | baked to `UTC` at build time | change it by rebuilding, not at runtime |
+| `TZ` | `UTC` | runtime timezone supplied by the chart's plain env ConfigMap |
 
 ## Migration behaviour
 
@@ -300,6 +298,11 @@ change and retain the newest `INDIALLSKY_PRE_MIGRATE_DUMP_KEEP` (default 8).
 The chart's scheduled mariadb backup CronJob is a separate mechanism with its
 own trigger and its own retention; neither substitutes for the other.
 
+Credential initialization, root recovery, dump encryption boundaries, and the
+required restore set/order are documented in
+[Chart configuration](configuration.md#credential-lifecycle-and-root-recovery)
+and [Backup protection and restore](configuration.md#backup-protection-and-restore).
+
 ### v1 caveat
 
 Upstream ships no Alembic revisions, so this generates them at runtime, on
@@ -331,6 +334,35 @@ non-default INDI server. Upstream's entrypoints rewrote both when they were
 `localhost`; those rewrites are gone. The base configuration's
 `INDI_SERVER: localhost` is already correct for the chart, where the INDI
 server runs as a sidecar in the capture pod.
+
+### Exact overlay-application barrier
+
+The chart serializes the merged overlay once as canonical compact JSON and
+hashes exactly those bytes. That digest is exposed as
+`INDIALLSKY_CONFIG_OVERLAY_SHA256`; formatting of the pretty ConfigMap view is
+not part of the identity. Chart-managed `INDI_SERVER`, `INDI_PORT`, and
+`IMAGE_FOLDER` win before hashing, so an attempted operator override of those
+keys cannot produce a false rollout identity.
+
+A6 must write the exact checksum plus a single trailing newline to the fixed
+sentinel path atomically (temporary file, then rename) only after migration,
+bootstrap, overlay load, and admin seeding all succeed. A7 owns a separate,
+bounded, diagnostic startup gate before it invokes the daemon entrypoint: read
+the sentinel, remove at most its single trailing newline, and require exact
+byte-for-byte equality with the expected checksum. Missing, stale, empty, or
+malformed content is not success. Only after that version gate passes does the
+daemon entrypoint run its existing bounded `config.py dumpfile` loop, which is
+the distinct database/bootstrap gate. This prevents capture from starting
+against an overlay version that the web migration path did not finish.
+
+The checksum is deliberately scoped to the canonical overlay payload. It is
+not a rollout epoch and does not order an image/schema-only upgrade whose
+overlay bytes are unchanged; an old sentinel can already match in that case,
+and `config.py dumpfile` can succeed against the old configuration row. The
+general migration-order race and its upgrade e2e are tracked by
+[issue #9](https://github.com/jaxzin/indi-allsky-helm/issues/9). A6/A7 must not
+interpret the overlay sentinel as proof that an unchanged-overlay schema
+migration completed.
 
 ## Readiness
 
