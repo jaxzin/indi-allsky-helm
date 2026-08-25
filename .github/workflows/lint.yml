@@ -36,7 +36,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No shell scripts yet (they arrive with the daemon/web images); skipping."
+            echo "No shell scripts found under images/; skipping."
           fi
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         if: steps.files.outputs.found == 'true'
@@ -58,7 +58,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No Dockerfiles yet (they arrive with the daemon/web images); skipping."
+            echo "No Dockerfiles found under images/; skipping."
           fi
       - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         if: steps.files.outputs.found == 'true'
