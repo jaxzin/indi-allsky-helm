@@ -1,0 +1,5 @@
+# Upstream checkout — created by `make upstream`, never vendored into this repo.
+upstream/
+
+# buildx bake metadata emitted by CI-style local runs
+bake-meta-*.json

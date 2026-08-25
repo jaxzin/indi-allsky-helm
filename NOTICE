@@ -1,0 +1,8 @@
+indi-allsky-helm — Copyright 2026 Brian R. Jackson
+
+Container images built by this project include indi-allsky (GPL-3.0), © Aaron
+Morris, https://github.com/aaronwmorris/indi-allsky — source for a given image
+tag is the upstream tag named by the image tag plus the patches/ directory at
+the chart repo tag.
+
+Patch contents under patches/ are derived from indi-allsky and are GPL-3.0.
