@@ -31,11 +31,21 @@ The existing Secret must contain these fixed keys:
 - `INDIALLSKY_FLASK_PASSWORD_KEY`
 - `MARIADB_PASSWORD`
 
-It may also contain `INDIALLSKY_OIDC_CLIENT_ID`,
-`INDIALLSKY_OIDC_CLIENT_SECRET`, `INDIALLSKY_OIDC_DISCOVERY_ENDPOINT`, and
-`INDIALLSKY_WEB_PASS` when those features are configured. Existing Secret
-contents are opaque to Helm. Do not combine `credentials.existingSecret` with
-any inline application secret value.
+When OIDC is enabled, its client ID and discovery endpoint must come either
+from the plain `oidc.clientId` / `oidc.discoveryEndpoint` values or from this
+Secret's fixed `INDIALLSKY_OIDC_CLIENT_ID` /
+`INDIALLSKY_OIDC_DISCOVERY_ENDPOINT` keys. The optional
+`INDIALLSKY_OIDC_CLIENT_SECRET` key is not required for public or PKCE clients.
+The Secret is loaded after the plain ConfigMap and wins if both sources define
+the same variable.
+When `adminUser.username` is configured against a fresh database, the Secret
+must also contain `INDIALLSKY_WEB_PASS` with at least eight characters so the
+migration initContainer can seed that user. Existing Secret contents are
+opaque to Helm, so the chart cannot preflight these conditional keys. The
+migration initContainer validates `INDIALLSKY_WEB_PASS` only when seeding
+actually applies; OIDC depends on receiving its client ID and discovery
+endpoint at runtime. Do not combine `credentials.existingSecret` with any
+inline application secret value.
 
 ## Internal or external database
 
@@ -87,6 +97,21 @@ Bare IPv6 hosts remain valid chart input, but the current image needs the
 before that connection mode works end to end. Use a DNS name or IPv4 address
 until it closes.
 
+### Web migration single-writer topology
+
+The v1 web Deployment is deliberately fixed at one replica with strategy
+`Recreate`; there is no public web replica-count value. This ensures only one
+chart-managed migration initContainer can write the shared Alembic history
+during a rollout. [Issue #16](https://github.com/jaxzin/indi-allsky-helm/issues/16)
+owns this single-writer contract, and
+[A9 (#8)](https://github.com/jaxzin/indi-allsky-helm/issues/8) owns its
+end-to-end rollout and overlap proof.
+
+This mechanism does **not** serialize the scheduled backup CronJob with
+migration DDL. The CronJob's `Forbid` concurrency policy prevents two scheduled
+backup Jobs from overlapping each other; it does not lock out the web
+migration initContainer.
+
 ### Credential lifecycle and root recovery
 
 The official MariaDB initialization variables and their `_FILE` equivalents
@@ -126,15 +151,18 @@ Set `sessionCookieSecure: false` only for deliberate plain-HTTP access.
 blanket RFC1918 list but cannot remove upstream's automatic trust of local
 interface networks.
 
-OIDC inline mode requires `oidc.clientId` and `oidc.discoveryEndpoint`. The
-client secret is optional for public/PKCE clients. In existing-Secret mode Helm
-cannot inspect whether those optional keys are present, so the Secret contract
-above applies. `oidc.localAuth: false` requires OIDC to remain enabled, and
+OIDC inline mode requires `oidc.clientId` and `oidc.discoveryEndpoint`. In
+existing-Secret mode those fields may remain empty only when the corresponding
+fixed keys are present in the Secret, whose contents Helm cannot inspect. The
+client secret is optional for public/PKCE clients in both modes.
+`oidc.localAuth: false` requires OIDC to remain enabled, and
 `oidc.autoLogin: true` also requires OIDC.
 
 A local admin is seeded only when `adminUser.username` is non-empty and the
 database has no real user yet. In inline mode its password must be at least
-eight characters; in existing-Secret mode `INDIALLSKY_WEB_PASS` is opaque.
+eight characters; in existing-Secret mode `INDIALLSKY_WEB_PASS` must meet the
+same runtime requirement on a fresh database, although its value is opaque to
+Helm.
 
 ## Config overlay and rollout barrier
 
@@ -228,7 +256,16 @@ migrations:
   preMigrateDumpKeep: 8
 ```
 
-The count must be an integer of at least one. Scheduled backups are separate:
+The count must be an integer of at least one. The current pre-migration path
+writes directly to the timestamped final filename. A failed pipeline can leave
+a partial final-looking file, and two runs in the same second can collide. The
+script still aborts before schema mutation, but verify any recovery candidate
+with `gzip -t` and a non-empty size check before relying on it. Atomic publication
+for this path is tracked in
+[issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22).
+
+Scheduled backups are separate and already use a unique temporary file,
+gzip/non-empty verification, and an atomic rename:
 
 ```yaml
 mariadb:

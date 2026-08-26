@@ -10,6 +10,7 @@
 - **A3 ⏳** — Batch 2 in progress; chart-repo issue #2 is the binding obligations ledger (incl. Batch 1 lessons-learned).
 - **Corrections found in execution** (this plan text deliberately NOT retro-edited; merged code + tracker are authoritative): the peeled-only `ls-remote` UPSTREAM_SHA resolve returns EMPTY on upstream's lightweight tag (use the two-pattern form); `UPSTREAM_SHA` was missing from A2's file list; `rhysd/actionlint` is not a `uses:`-able action (devops-actions wrapper used); `images.yml` dropped the `chart-v*` tags trigger (chart tags don't change image content — release-digest race); wildcard `--set` caused BOTH production failures (cache-ref collision, tagged-ref push-by-digest refusal) — per-target HCL helpers (`cache_from`/`cache_to`/`publish_tags`/`publish_output`) are now the pattern; `setup-helm`'s SHA pin doesn't pin helm (`version:` input required); `ct` runs with `check-version-increment: false` pre-1.0.
 - **Three deliberate exceptions to the no-retro-edit convention above**, made at the A3 review bench's request rather than by the author's choice, because leaving them would have propagated errors into work not yet started: Task A3 Step 6's target count (`5` → `6`), Step 4's Flask-Migrate rationale (`check` exists from 4.0.5, not 4.0.6 — the 4.0.6 floor comes from issue #2's acceptance criterion, not from feature availability), and Step 7's smoke command (a bare `--entrypoint python3` hits the system interpreter and fails; the venv interpreter plus the checkout as cwd are the contract). The convention still holds everywhere else: merged code and the tracker remain authoritative.
+- **A5 review-bench exceptions to that convention:** three stale, copyable excerpts were replaced with links to their authoritative implementations: the A3 `migrate.sh` excerpt and the A5 environment ConfigMap and application Secret excerpts. They predated the verified dump guard, centralized fail-fast validation, the complete environment contract, conditional external-database/OIDC behavior, and collision-safe resource naming. Keeping runnable-looking obsolete code would have contradicted the public operator contract; outside these named corrections, merged code and the tracker remain authoritative.
 
 > **For agentic workers:** implement this plan task-by-task with fresh-context workers and per-task review. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -378,89 +379,14 @@ json_pp < "${ALLSKY_ETC}/flask.json" >/dev/null
 
 - [ ] **Step 2: Write `images/web/migrate.sh`** (initContainer command — migrations, bootstrap, config overlay, optional admin seed)
 
-```bash
-#!/bin/bash
-set -o errexit
-set -o nounset
-
-/home/allsky/render-flask-config.sh
-cd /home/allsky/indi-allsky
-# shellcheck disable=SC1091
-source /home/allsky/venv/bin/activate
-
-echo "Waiting for database ${INDIALLSKY_MARIADB_HOST}:${INDIALLSKY_MARIADB_PORT}"
-until python3 -c "import socket; socket.create_connection(('${INDIALLSKY_MARIADB_HOST}', int('${INDIALLSKY_MARIADB_PORT}')), 3)" 2>/dev/null; do
-    sleep 3
-done
-
-# Alembic revisions are runtime-generated (upstream ships none); MIGRATION_FOLDER
-# must persist on the shared data PVC or `upgrade head` cannot find prior revisions.
-MIGRATION_FOLDER="${INDIALLSKY_MIGRATION_FOLDER:-/var/www/html/allsky/.state/migrations}"
-mkdir -p "$(dirname "$MIGRATION_FOLDER")"
-if [[ ! -d "$MIGRATION_FOLDER" ]]; then
-    flask db init
-fi
-
-# Guarded migrations (the maintainer's decision 2026-08-20; ordering per architect review):
-# apply pending revisions FIRST — alembic's `check` and `revision --autogenerate`
-# both error against a behind-head DB, which is exactly the upgrade case — then
-# dump + autogenerate only when the models genuinely differ from the live schema.
-# `flask db check` runs unredirected so its reason is visible in logs; a false
-# non-zero still lands in the dump-guarded branch. The web image pins
-# Flask-Migrate>=4.0.6 so the subcommand always exists. CI-committed revisions
-# replace all of this before the first UPSTREAM_VERSION bump (tracked issue).
-flask db upgrade head
-
-if flask db check; then
-    echo "Schema matches models; no migration needed"
-else
-    echo "Model changes detected; generating guarded migration"
-    if [ "${INDIALLSKY_PRE_MIGRATE_DUMP:-true}" == "true" ]; then
-        # Safety property: no schema mutation without a fresh dump. Disable via
-        # migrations.preMigrateDump=false only for least-privilege external DBs
-        # with DBA-managed backups. --single-transaction avoids read-locking the
-        # catalog against the running daemon.
-        # Image fallback retained for standalone compatibility. A5 always sets
-        # INDIALLSKY_BACKUP_DIR to /var/www/html/.state/backups, a sibling of
-        # the nginx docroot on the shared parent mount.
-        DUMP_DIR="${INDIALLSKY_BACKUP_DIR:-/var/www/html/allsky/.state/backups}"
-        mkdir -p "$DUMP_DIR"
-        MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump \
-            --single-transaction --no-tablespaces \
-            -h "$INDIALLSKY_MARIADB_HOST" -P "$INDIALLSKY_MARIADB_PORT" \
-            -u "$MARIADB_USER" "$MARIADB_DATABASE" \
-            | gzip > "$DUMP_DIR/pre-migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
-        ls -1t "$DUMP_DIR"/pre-migrate_*.sql.gz | tail -n +8 | xargs -r rm --
-    fi
-    flask db revision --autogenerate
-    flask db upgrade head
-fi
-
-./config.py bootstrap || true   # exits 1 if config already exists
-
-# Apply the GitOps-owned config overlay (deep merge over the current config)
-# Image fallback retained for standalone compatibility; A5 sets the separate
-# projected chart path /etc/indi-allsky-overlay/config-overlay.json.
-OVERLAY="${INDIALLSKY_CONFIG_OVERLAY:-/etc/indi-allsky/config-overlay.json}"
-if [[ -f "$OVERLAY" ]]; then
-    TMP_DUMP=$(mktemp --suffix=.json)
-    TMP_MERGED=$(mktemp --suffix=.json)
-    ./config.py dump > "$TMP_DUMP"
-    jq -s '.[0] * .[1]' "$TMP_DUMP" "$OVERLAY" > "$TMP_MERGED"
-    ./config.py load -c "$TMP_MERGED" --force
-    rm -f "$TMP_DUMP" "$TMP_MERGED"
-fi
-
-# Seed a local admin only when local auth is on and credentials are provided
-if [ "${INDIALLSKY_LOCAL_AUTH_ENABLE:-true}" == "true" ] && [ -n "${INDIALLSKY_WEB_USER:-}" ]; then
-    USER_COUNT=$(./config.py user_count)
-    if [ "$USER_COUNT" -le 1 ]; then  # only the internal 'system' user exists
-        ./misc/usertool.py adduser -u "$INDIALLSKY_WEB_USER" -p "$INDIALLSKY_WEB_PASS" -f "${INDIALLSKY_WEB_NAME:-Admin}" -e "${INDIALLSKY_WEB_EMAIL:-admin@example.com}"
-        ./misc/usertool.py setadmin -u "$INDIALLSKY_WEB_USER"
-    fi
-fi
-echo "migrate.sh complete"
-```
+> **Review-bench correction:** the original illustrative shell excerpt was
+> removed because it remained copyable after the implementation gained strict
+> validation, bounded waits, verified dump handling, atomic config rendering,
+> and diagnostic bootstrap/seeding failures. The authoritative sources are
+> [`images/web/migrate.sh`](../../images/web/migrate.sh) and
+> [`images/shared/render-flask-config.sh`](../../images/shared/render-flask-config.sh);
+> their contract is summarized in
+> [`docs/container-contract.md`](../container-contract.md#migration-behaviour).
 
 - [ ] **Step 3: Write `images/web/entrypoint-web.sh` and `images/daemon/entrypoint-daemon.sh`**
 
@@ -1021,68 +947,26 @@ Run `helm unittest charts/indi-allsky` — expect the new suite to FAIL (templat
 
 - [ ] **Step 2: configmap-env.yaml**
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "indi-allsky.envConfigMapName" . }}
-  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
-data:
-  TZ: {{ .Values.timezone | quote }}
-  INDIALLSKY_MARIADB_HOST: {{ include "indi-allsky.dbHost" . | quote }}
-  INDIALLSKY_MARIADB_PORT: {{ (.Values.mariadb.enabled | ternary 3306 .Values.externalDatabase.port) | quote }}
-  INDIALLSKY_MARIADB_SSL: "false"
-  MARIADB_USER: {{ (.Values.mariadb.enabled | ternary .Values.mariadb.username .Values.externalDatabase.username) | quote }}
-  MARIADB_DATABASE: {{ (.Values.mariadb.enabled | ternary .Values.mariadb.database .Values.externalDatabase.database) | quote }}
-  INDIALLSKY_IMAGE_FOLDER: "/var/www/html/allsky/images"
-  INDIALLSKY_MIGRATION_FOLDER: "/var/www/html/allsky/.state/migrations"
-  INDIALLSKY_PRE_MIGRATE_DUMP: {{ .Values.migrations.preMigrateDump | quote }}
-  INDIALLSKY_FLASK_AUTH_ALL_VIEWS: {{ .Values.web.authAllViews | quote }}
-  INDIALLSKY_OIDC_ENABLE: {{ .Values.oidc.enabled | quote }}
-  INDIALLSKY_OIDC_PROVIDER_NAME: {{ .Values.oidc.providerName | quote }}
-  {{- if .Values.oidc.clientId }}
-  INDIALLSKY_OIDC_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
-  {{- end }}
-  {{- if .Values.oidc.discoveryEndpoint }}
-  INDIALLSKY_OIDC_DISCOVERY_ENDPOINT: {{ .Values.oidc.discoveryEndpoint | quote }}
-  {{- end }}
-  INDIALLSKY_OIDC_USERNAME_CLAIM: {{ .Values.oidc.usernameClaim | quote }}
-  INDIALLSKY_OIDC_ALLOWED_GROUPS: {{ .Values.oidc.allowedGroups | toJson | quote }}
-  INDIALLSKY_OIDC_ADMIN_GROUPS: {{ .Values.oidc.adminGroups | toJson | quote }}
-  INDIALLSKY_OIDC_AUTO_LOGIN: {{ .Values.oidc.autoLogin | quote }}
-  INDIALLSKY_LOCAL_AUTH_ENABLE: {{ .Values.oidc.localAuth | quote }}
-  {{- if .Values.adminUser.username }}
-  INDIALLSKY_WEB_USER: {{ .Values.adminUser.username | quote }}
-  INDIALLSKY_WEB_NAME: {{ .Values.adminUser.name | quote }}
-  INDIALLSKY_WEB_EMAIL: {{ .Values.adminUser.email | quote }}
-  {{- end }}
-  {{- if .Values.edge.darks.enabled }}
-  INDIALLSKY_DARK_CAPTURE_ENABLE: "true"
-  {{- end }}
-```
+> **Review-bench correction:** the original partial ConfigMap excerpt was
+> removed because it hard-coded external-database SSL and omitted parts of the
+> approved environment and checksum contracts. Use the authoritative
+> [`configmap-env.yaml`](../../charts/indi-allsky/templates/configmap-env.yaml),
+> with fail-fast rules in
+> [`_validate.tpl`](../../charts/indi-allsky/templates/_validate.tpl) and
+> executable coverage in
+> [`env_test.yaml`](../../charts/indi-allsky/tests/env_test.yaml) and
+> [`validation_test.yaml`](../../charts/indi-allsky/tests/validation_test.yaml).
 
-- [ ] **Step 3: secret-env.yaml** (rendered only without existingSecret; `required` guards give actionable errors)
+- [ ] **Step 3: secret-env.yaml** (rendered only without existingSecret;
+  centralized validation gives actionable errors)
 
-```yaml
-{{- if not .Values.credentials.existingSecret }}
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ include "indi-allsky.fullname" . }}-env
-  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
-type: Opaque
-stringData:
-  INDIALLSKY_FLASK_SECRET_KEY: {{ required "credentials.flaskSecretKey (or existingSecret) is required" .Values.credentials.flaskSecretKey | quote }}
-  INDIALLSKY_FLASK_PASSWORD_KEY: {{ required "credentials.flaskPasswordKey (or existingSecret) is required" .Values.credentials.flaskPasswordKey | quote }}
-  MARIADB_PASSWORD: {{ required "credentials.mariadbPassword (or existingSecret) is required" .Values.credentials.mariadbPassword | quote }}
-  {{- if .Values.oidc.clientSecret }}
-  INDIALLSKY_OIDC_CLIENT_SECRET: {{ .Values.oidc.clientSecret | quote }}
-  {{- end }}
-  {{- if .Values.credentials.adminPassword }}
-  INDIALLSKY_WEB_PASS: {{ .Values.credentials.adminPassword | quote }}
-  {{- end }}
-{{- end }}
-```
+> **Review-bench correction:** the original Secret excerpt predated the
+> separate root-credential contract, opaque existing-Secret mode, conditional
+> OIDC/admin requirements, and collision-safe names. Use the authoritative
+> [`secret-env.yaml`](../../charts/indi-allsky/templates/secret-env.yaml),
+> centralized validation in
+> [`_validate.tpl`](../../charts/indi-allsky/templates/_validate.tpl), and
+> [`secret_test.yaml`](../../charts/indi-allsky/tests/secret_test.yaml).
 
 - [ ] **Step 4: configmap-overlay.yaml** (chart-managed keys merged over `.Values.appConfig`; chart wins)
 
