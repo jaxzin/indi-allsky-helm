@@ -321,11 +321,17 @@ is untouched.
 The current pre-migration implementation writes directly to its timestamped
 final path. A failed dump can therefore leave a partial file with a final-looking
 name, and two runs in the same second can target the same path. The failure
-still aborts before schema mutation, but operators must run `gzip -t` and verify
-the file is non-empty before treating it as recovery material. Hardening this
-path is tracked in [issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22).
-The scheduled backup CronJob does not share this limitation: it writes a unique
-temporary file, verifies it, and publishes it with an atomic rename.
+still aborts before schema mutation. `gzip -t` and the non-empty check are
+necessary guards on the successful command path, but they cannot establish
+that an orphaned artifact contains one complete SQL dump. Any file from a
+failed, ambiguous, or overlapping run is invalid and must not be salvaged,
+even if those checks pass. Obtain an unambiguous pre-migration run that reaches
+`Pre-migrate dump complete` without overlap, or rely on the already-atomic
+scheduled backup before treating a file as recovery material. Permanent atomic
+publication and collision prevention are tracked in
+[issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22). The scheduled
+backup CronJob does not share this limitation: it writes a unique temporary
+file, verifies it, and publishes it with an atomic rename.
 
 This is why the retention count must be at least 1: a retention of 0 would
 prune the dump taken moments earlier, inverting the property. To skip the dump

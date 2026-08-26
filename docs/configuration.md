@@ -259,9 +259,15 @@ migrations:
 The count must be an integer of at least one. The current pre-migration path
 writes directly to the timestamped final filename. A failed pipeline can leave
 a partial final-looking file, and two runs in the same second can collide. The
-script still aborts before schema mutation, but verify any recovery candidate
-with `gzip -t` and a non-empty size check before relying on it. Atomic publication
-for this path is tracked in
+script still aborts before schema mutation. Its `gzip -t` and non-empty checks
+are necessary integrity guards on a successful run, but they cannot prove that
+an artifact left by a failed, ambiguous, or overlapping run contains one
+complete SQL dump. Such an artifact is invalid and must not be salvaged, even
+if those checks pass.
+Before relying on recovery material, obtain an unambiguous pre-migration run
+that reaches its success message without overlap, or use an already-atomic
+scheduled backup. Permanent atomic publication and collision prevention for
+the pre-migration path are tracked in
 [issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22).
 
 Scheduled backups are separate and already use a unique temporary file,
