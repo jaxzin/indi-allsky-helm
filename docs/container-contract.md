@@ -76,6 +76,14 @@ disagree about the schema history. Revisions are generated at runtime
    and seeding environment. It holds the database to itself: gunicorn and the
    capture daemon both start only after it exits 0. Running migrations from N
    gunicorn replicas instead would race them over one Alembic history.
+5. **MUST apply `storage.retentionPolicy` symmetrically** to chart-generated
+   shared-data and internal-MariaDB PVCs. `Retain` is the default recovery-set
+   posture and adds Helm's keep annotation to both standalone claims; `Delete`
+   is an explicit pre-uninstall choice and omits it from both. The MariaDB
+   StatefulSet mounts its separately rendered RWO claim and does not use the
+   Kubernetes-version-dependent StatefulSet PVC-retention field. Existing
+   shared claims are never annotated or modified, and the StorageClass/PV
+   reclaim policy still governs backing storage after PVC deletion.
 
 ## Environment contract
 

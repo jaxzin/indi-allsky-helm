@@ -151,11 +151,17 @@ credentials:
   adminPassword: ""
 
 storage:
+  # Retain protects the shared application recovery set and internal database
+  # PVCs across uninstall. Switch to Delete in a deliberate upgrade before an
+  # automated uninstall when those PVCs should be removed.
+  retentionPolicy: Retain
   data:
     # RWX required whenever edge and web can land on different nodes
     existingClaim: ""
+    # Empty selects the cluster default; a non-empty value must be a DNS subdomain.
     storageClassName: ""
     accessModes: [ReadWriteMany]
+    # Kubernetes quantity, kept as a non-empty string and quoted in the manifest.
     size: 100Gi
 
 mariadb:
@@ -171,7 +177,9 @@ mariadb:
     existingSecret: ""
     password: ""            # development only; prefer existingSecret
   persistence:
+    # Empty selects the cluster default; a non-empty value must be a DNS subdomain.
     storageClassName: ""
+    # Kubernetes quantity, kept as a non-empty string and quoted in the manifest.
     size: 8Gi
   backup:
     enabled: false

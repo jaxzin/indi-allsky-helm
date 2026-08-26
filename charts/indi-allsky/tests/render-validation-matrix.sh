@@ -59,6 +59,93 @@ helm template "${RELEASE_NAME}-external" "$CHART_DIRECTORY" \
     --values "$EXTERNAL_VALUES" >"${SCRATCH_DIRECTORY}/external.yaml"
 test -s "${SCRATCH_DIRECTORY}/external.yaml"
 
+# Quoting at both PVC scalar sinks must preserve hostile multiline input as one
+# scalar rather than allowing a sibling field or YAML document to be injected.
+readonly MALICIOUS_SIZE=$'100Gi\ninjected: true\n---\napiVersion: v1\nkind: Secret'
+helm template "${RELEASE_NAME}-quoted-size" "$CHART_DIRECTORY" \
+    --values "$BASE_VALUES" \
+    --set-string storage.data.size="$MALICIOUS_SIZE" \
+    --set-string mariadb.persistence.size="$MALICIOUS_SIZE" \
+    >"${SCRATCH_DIRECTORY}/quoted-size.yaml"
+baseline_document_count="$(yq eval-all '[.] | length' "${SCRATCH_DIRECTORY}/internal.yaml")"
+quoted_document_count="$(yq eval-all '[.] | length' "${SCRATCH_DIRECTORY}/quoted-size.yaml")"
+quoted_shared_size="$(
+    yq eval 'select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-data$")) and (.metadata.name | test("-mariadb-data$") | not)) | .spec.resources.requests.storage' \
+        "${SCRATCH_DIRECTORY}/quoted-size.yaml"
+)"
+quoted_database_size="$(
+    yq eval 'select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-mariadb-data$"))) | .spec.resources.requests.storage' \
+        "${SCRATCH_DIRECTORY}/quoted-size.yaml"
+)"
+injected_sibling_count="$(
+    yq eval-all '[select(.spec.resources.requests.injected != null)] | length' \
+        "${SCRATCH_DIRECTORY}/quoted-size.yaml"
+)"
+test "$quoted_document_count" -eq "$baseline_document_count"
+test "$quoted_shared_size" = "$MALICIOUS_SIZE"
+test "$quoted_database_size" = "$MALICIOUS_SIZE"
+test "$injected_sibling_count" -eq 0
+printf 'direct PVC scalar injection: quoted, no sibling/document injection\n'
+
+# The two generated recovery-set PVCs share one lifecycle policy. The internal
+# StatefulSet references the standalone database claim instead of relying on a
+# version-gated StatefulSet PVC-retention field.
+default_shared_policy="$(
+    yq eval 'select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-data$")) and (.metadata.name | test("-mariadb-data$") | not)) | .metadata.annotations."helm.sh/resource-policy"' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+default_database_policy="$(
+    yq eval 'select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-mariadb-data$"))) | .metadata.annotations."helm.sh/resource-policy"' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+default_database_claim="$(
+    yq eval 'select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-mariadb-data$"))) | .metadata.name' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+statefulset_database_claim="$(
+    yq eval 'select(.kind == "StatefulSet") | .spec.template.spec.volumes[] | select(.name == "database") | .persistentVolumeClaim.claimName' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+unsupported_retention_field="$(
+    yq eval 'select(.kind == "StatefulSet") | .spec.persistentVolumeClaimRetentionPolicy' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+test "$default_shared_policy" = "keep"
+test "$default_database_policy" = "keep"
+test "$default_database_claim" = "$statefulset_database_claim"
+test "$unsupported_retention_field" = "null"
+
+helm template "${RELEASE_NAME}-delete" "$CHART_DIRECTORY" \
+    --values "$BASE_VALUES" \
+    --set-string storage.retentionPolicy=Delete >"${SCRATCH_DIRECTORY}/delete.yaml"
+delete_kept_count="$(
+    yq eval-all '[select(.kind == "PersistentVolumeClaim" and .metadata.annotations."helm.sh/resource-policy" == "keep")] | length' \
+        "${SCRATCH_DIRECTORY}/delete.yaml"
+)"
+delete_pvc_count="$(grep -c '^kind: PersistentVolumeClaim$' "${SCRATCH_DIRECTORY}/delete.yaml" || true)"
+test "$delete_kept_count" -eq 0
+test "$delete_pvc_count" -eq 2
+
+helm template "${RELEASE_NAME}-existing" "$CHART_DIRECTORY" \
+    --values "$BASE_VALUES" \
+    --set-string storage.data.existingClaim=retained-data.example \
+    >"${SCRATCH_DIRECTORY}/existing.yaml"
+existing_pvc_count="$(grep -c '^kind: PersistentVolumeClaim$' "${SCRATCH_DIRECTORY}/existing.yaml" || true)"
+existing_database_pvc_count="$(
+    yq eval-all '[select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-mariadb-data$")))] | length' \
+        "${SCRATCH_DIRECTORY}/existing.yaml"
+)"
+external_pvc_count="$(grep -c '^kind: PersistentVolumeClaim$' "${SCRATCH_DIRECTORY}/external.yaml" || true)"
+external_database_pvc_count="$(
+    yq eval-all '[select(.kind == "PersistentVolumeClaim" and (.metadata.name | test("-mariadb-data$")))] | length' \
+        "${SCRATCH_DIRECTORY}/external.yaml"
+)"
+test "$existing_pvc_count" -eq 1
+test "$existing_database_pvc_count" -eq 1
+test "$external_pvc_count" -eq 1
+test "$external_database_pvc_count" -eq 0
+printf 'direct storage lifecycle: Retain/Delete symmetric, existing/external omission passed\n'
+
 expect_failure \
     "missing inline Flask key" \
     "credentials.flaskSecretKey (or credentials.existingSecret) is required" \
@@ -124,5 +211,35 @@ expect_failure \
     "invalid image pull policy" \
     "image.pullPolicy must be one of: Always, IfNotPresent, Never" \
     --set-string image.pullPolicy=Sometimes
+
+expect_failure \
+    "invalid storage retention policy" \
+    "storage.retentionPolicy must be one of: Retain, Delete" \
+    --set-string storage.retentionPolicy=Archive
+
+expect_failure \
+    "non-string shared PVC size" \
+    "storage.data.size must be a string" \
+    --set storage.data.size=100
+
+expect_failure \
+    "empty shared PVC size" \
+    "storage.data.size must be set and non-empty" \
+    --set-string storage.data.size=
+
+expect_failure \
+    "non-string MariaDB PVC size" \
+    "mariadb.persistence.size must be a string" \
+    --set mariadb.persistence.size=8
+
+expect_failure \
+    "empty MariaDB PVC size" \
+    "mariadb.persistence.size must be set and non-empty" \
+    --set-string mariadb.persistence.size=
+
+expect_failure \
+    "multiline storage-class injection" \
+    "storage.data.storageClassName must be a valid DNS subdomain StorageClass name" \
+    --set-string storage.data.storageClassName=$'storage.example\n---\nkind: Secret'
 
 printf 'direct render matrix: 2 valid modes, %d invalid modes passed\n' "$case_number"

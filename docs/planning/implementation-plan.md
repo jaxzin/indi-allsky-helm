@@ -757,6 +757,7 @@ credentials:
   adminPassword: ""
 
 storage:
+  retentionPolicy: Retain
   data:
     # RWX required whenever edge and web can land on different nodes
     existingClaim: ""
@@ -809,10 +810,11 @@ centralized. Generated object names go through one collision-safe
 eight-character hash derived from the original candidate, while preserving the
 semantic suffix. Dedicated helpers (`dataPvcName`, `envSecretName`,
 `envConfigMapName`, `overlayConfigMapName`, `mariadbName`,
-`mariadbRootSecretName`, and `backupCronJobName`) are the only names consumed by
-templates and cross-resource references. CronJob names use a 52-character
-ceiling; all other generated names use 63. Existing Secret and PVC names are
-validated as DNS subdomains before their helpers return them.
+`mariadbServiceName`, `mariadbDataPvcName`, `mariadbRootSecretName`, and
+`backupCronJobName`) are the only names consumed by templates and
+cross-resource references. CronJob names use a 52-character ceiling; all other
+generated names use 63. Existing Secret and PVC names are validated as DNS
+subdomains before their helpers return them.
 
 - [ ] **Step 4: pvc-data.yaml and priorityclass.yaml**
 
@@ -827,11 +829,11 @@ metadata:
 spec:
   accessModes: {{- toYaml .Values.storage.data.accessModes | nindent 4 }}
   {{- with .Values.storage.data.storageClassName }}
-  storageClassName: {{ . }}
+  storageClassName: {{ . | quote }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.storage.data.size }}
+      storage: {{ .Values.storage.data.size | quote }}
 {{- end }}
 ```
 
@@ -932,7 +934,7 @@ jobs:
 
 **Files:**
 - Create: `charts/indi-allsky/templates/configmap-env.yaml`, `templates/secret-env.yaml`, `templates/configmap-overlay.yaml`
-- Create: `templates/secret-mariadb-root.yaml`, `templates/mariadb-statefulset.yaml`, `templates/mariadb-service.yaml`, `templates/mariadb-backup-cronjob.yaml`, `templates/validate.yaml`
+- Create: `templates/secret-mariadb-root.yaml`, `templates/mariadb-statefulset.yaml`, `templates/mariadb-service.yaml`, `templates/mariadb-backup-cronjob.yaml`, `templates/pvc-mariadb.yaml`, `templates/validate.yaml`
 - Create: manifest-specific suites under `charts/indi-allsky/tests/` plus a centralized invalid-value suite and validation-wiring guard
 
 **Interfaces:**
@@ -954,6 +956,15 @@ jobs:
 > and A6/A7 coordinate through the exact canonical-overlay checksum sentinel at
 > `/var/www/html/.state/config-overlay.applied`. These requirements supersede
 > the original illustrative excerpts wherever an excerpt is incomplete.
+
+> **Approved storage-lifecycle amendment:** `storage.retentionPolicy` is the
+> exact enum `Retain|Delete`, defaulting to `Retain`, and governs both generated
+> shared-data and internal-MariaDB PVCs. Both are standalone Helm-managed
+> claims and use Helm's keep annotation in `Retain` mode; `Delete` omits it from
+> both. This avoids the StatefulSet PVC-retention field, which is not compatible
+> with the Kubernetes 1.26 floor. Existing shared claims are never modified,
+> and external mode has no MariaDB PVC. PVC size and storage-class scalar sinks
+> are validated and quoted to prevent YAML document or sibling-field injection.
 
 - [ ] **Step 1: Failing unit tests**
 
@@ -1100,7 +1111,7 @@ metadata:
   name: {{ include "indi-allsky.mariadbName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "indi-allsky.mariadbName" . }}
+  serviceName: {{ include "indi-allsky.mariadbServiceName" . }}
   replicas: 1
   selector:
     matchLabels: {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
@@ -1137,15 +1148,32 @@ spec:
           {{- with .Values.mariadb.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
-          volumeMounts: [{ name: db, mountPath: /var/lib/mysql }]
-  volumeClaimTemplates:
-    - metadata: { name: db }
-      spec:
-        accessModes: [ReadWriteOnce]
-        {{- with .Values.mariadb.persistence.storageClassName }}
-        storageClassName: {{ . }}
-        {{- end }}
-        resources: { requests: { storage: {{ .Values.mariadb.persistence.size }} } }
+          volumeMounts: [{ name: database, mountPath: /var/lib/mysql }]
+      volumes:
+        - name: database
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.mariadbDataPvcName" . }}
+{{- end }}
+```
+
+```yaml
+# templates/pvc-mariadb.yaml
+{{- if .Values.mariadb.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "indi-allsky.mariadbDataPvcName" . }}
+  {{- if eq .Values.storage.retentionPolicy "Retain" }}
+  annotations: { helm.sh/resource-policy: keep }
+  {{- end }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.mariadb.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mariadb.persistence.size | quote }}
 {{- end }}
 ```
 
@@ -1155,7 +1183,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "indi-allsky.mariadbName" . }}
+  name: {{ include "indi-allsky.mariadbServiceName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
   clusterIP: None

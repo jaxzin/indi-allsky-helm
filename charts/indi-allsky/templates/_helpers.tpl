@@ -93,6 +93,10 @@ app.kubernetes.io/component: {{ .component }}
 {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "mariadb" "maxLength" 63) }}
 {{- end }}
 
+{{- define "indi-allsky.mariadbDataPvcName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "mariadb-data" "maxLength" 63) }}
+{{- end }}
+
 {{- define "indi-allsky.mariadbServiceName" -}}
 {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "mariadb" "maxLength" 63 "alphaPrefix" "svc") }}
 {{- end }}

@@ -1,15 +1,20 @@
+{{- include "indi-allsky.validateValues" . -}}
 {{- if not .Values.storage.data.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "indi-allsky.dataPvcName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
+  {{- if eq .Values.storage.retentionPolicy "Retain" }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes: {{- toYaml .Values.storage.data.accessModes | nindent 4 }}
   {{- with .Values.storage.data.storageClassName }}
-  storageClassName: {{ . }}
+  storageClassName: {{ . | quote }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.storage.data.size }}
+      storage: {{ .Values.storage.data.size | quote }}
 {{- end }}

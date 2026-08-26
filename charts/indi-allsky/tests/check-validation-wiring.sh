@@ -12,6 +12,8 @@ readonly templates=(
   mariadb-service.yaml
   mariadb-statefulset.yaml
   mariadb-backup-cronjob.yaml
+  pvc-data.yaml
+  pvc-mariadb.yaml
   validate.yaml
 )
 

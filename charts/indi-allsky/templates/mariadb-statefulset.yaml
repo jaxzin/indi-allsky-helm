@@ -120,18 +120,7 @@ spec:
             items:
               - key: MARIADB_ROOT_PASSWORD
                 path: MARIADB_ROOT_PASSWORD
-  volumeClaimTemplates:
-    - metadata:
-        name: database
-        labels:
-          {{- include "indi-allsky.labels" . | nindent 10 }}
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        {{- with .Values.mariadb.persistence.storageClassName }}
-        storageClassName: {{ . | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.mariadb.persistence.size }}
+        - name: database
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.mariadbDataPvcName" . }}
 {{- end }}

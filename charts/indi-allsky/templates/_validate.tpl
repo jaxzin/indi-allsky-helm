@@ -122,6 +122,7 @@
 {{- include "indi-allsky.validateEnum" (dict "name" "edge.devices.mode" "value" .Values.edge.devices.mode "allowed" (list "hostpath" "device-plugin" "none")) -}}
 {{- include "indi-allsky.validateEnum" (dict "name" "edge.darks.mode" "value" .Values.edge.darks.mode "allowed" (list "flush" "average" "tempaverage" "sigmaclip" "tempsigmaclip")) -}}
 {{- include "indi-allsky.validateEnum" (dict "name" "image.pullPolicy" "value" .Values.image.pullPolicy "allowed" (list "Always" "IfNotPresent" "Never")) -}}
+{{- include "indi-allsky.validateEnum" (dict "name" "storage.retentionPolicy" "value" .Values.storage.retentionPolicy "allowed" (list "Retain" "Delete")) -}}
 
 {{- include "indi-allsky.validateStringList" (dict "name" "oidc.allowedGroups" "value" .Values.oidc.allowedGroups) -}}
 {{- include "indi-allsky.validateStringList" (dict "name" "oidc.adminGroups" "value" .Values.oidc.adminGroups) -}}
@@ -142,6 +143,8 @@
 {{- include "indi-allsky.validateString" (dict "name" "adminUser.username" "value" .Values.adminUser.username "allowEmpty" true) -}}
 {{- include "indi-allsky.validateString" (dict "name" "adminUser.name" "value" .Values.adminUser.name "allowEmpty" true) -}}
 {{- include "indi-allsky.validateString" (dict "name" "adminUser.email" "value" .Values.adminUser.email "allowEmpty" true) -}}
+{{- include "indi-allsky.validateString" (dict "name" "storage.data.size" "value" .Values.storage.data.size "allowEmpty" false) -}}
+{{- include "indi-allsky.validateString" (dict "name" "mariadb.persistence.size" "value" .Values.mariadb.persistence.size "allowEmpty" false) -}}
 
 {{- include "indi-allsky.validatePattern" (dict "name" "externalDatabase.charset" "value" .Values.externalDatabase.charset "pattern" $charsetPattern "allowEmpty" false "description" "may contain only letters, digits, and underscore") -}}
 {{- include "indi-allsky.validatePattern" (dict "name" "externalDatabase.collation" "value" .Values.externalDatabase.collation "pattern" $charsetPattern "allowEmpty" false "description" "may contain only letters, digits, and underscore") -}}
@@ -149,6 +152,8 @@
 {{- include "indi-allsky.validateSecretName" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) -}}
 {{- include "indi-allsky.validateSecretName" (dict "name" "mariadb.rootCredentials.existingSecret" "value" .Values.mariadb.rootCredentials.existingSecret) -}}
 {{- include "indi-allsky.validateDnsSubdomain" (dict "name" "storage.data.existingClaim" "value" .Values.storage.data.existingClaim "objectKind" "PersistentVolumeClaim name") -}}
+{{- include "indi-allsky.validateDnsSubdomain" (dict "name" "storage.data.storageClassName" "value" .Values.storage.data.storageClassName "objectKind" "StorageClass name") -}}
+{{- include "indi-allsky.validateDnsSubdomain" (dict "name" "mariadb.persistence.storageClassName" "value" .Values.mariadb.persistence.storageClassName "objectKind" "StorageClass name") -}}
 
 {{- if .Values.mariadb.enabled -}}
   {{- include "indi-allsky.validatePattern" (dict "name" "mariadb.database" "value" .Values.mariadb.database "pattern" $dbPattern "allowEmpty" false "description" "may contain only letters, digits, underscore, hyphen, and dollar sign") -}}

@@ -12,6 +12,7 @@ templates:
   - mariadb-statefulset.yaml
   - mariadb-backup-cronjob.yaml
   - pvc-data.yaml
+  - pvc-mariadb.yaml
   - priorityclass.yaml
 tests:
   - it: prefixes a digit-leading Service name with a collision-resistant hash
@@ -68,6 +69,14 @@ tests:
       name: 1foo
     asserts:
       - equal: {path: metadata.name, value: 1foo-indi-allsky-data}
+
+  - it: leaves a digit-leading generated MariaDB PVC unchanged
+    template: pvc-mariadb.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: 1foo-indi-allsky-mariadb-data}
+      - notEqual: {path: metadata.name, value: svc-1foo-indi-allsky-mariadb-data}
 
   - it: normalizes a dotted release with a collision-resistant hash
     template: mariadb-service.yaml
@@ -143,6 +152,15 @@ tests:
     asserts:
       - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-3dcc3906-data}
       - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-data$'}
+
+  - it: preserves the standalone MariaDB PVC suffix and hash at maximum length
+    template: pvc-mariadb.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-807a77f2-mariadb-data}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-mariadb-data$'}
 
   - it: keeps the PriorityClass producer within the same naming contract
     template: priorityclass.yaml

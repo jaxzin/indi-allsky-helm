@@ -853,3 +853,81 @@ tests:
       image.pullPolicy: true
     asserts:
       - failedTemplate: {errorMessage: image.pullPolicy must be a string}
+
+  - it: rejects an invalid storage retention policy
+    set:
+      storage.retentionPolicy: Archive
+    asserts:
+      - failedTemplate: {errorMessage: "storage.retentionPolicy must be one of: Retain, Delete"}
+
+  - it: rejects a non-string storage retention policy
+    set:
+      storage.retentionPolicy: true
+    asserts:
+      - failedTemplate: {errorMessage: storage.retentionPolicy must be a string}
+
+  - it: rejects a non-string shared PVC size
+    set:
+      storage.data.size: 100
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.size must be a string}
+
+  - it: rejects an empty shared PVC size
+    set:
+      storage.data.size: ""
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.size must be set and non-empty}
+
+  - it: rejects a non-string MariaDB PVC size
+    set:
+      mariadb.persistence.size: 8
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.size must be a string}
+
+  - it: rejects an empty MariaDB PVC size
+    set:
+      mariadb.persistence.size: ""
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.size must be set and non-empty}
+
+  - it: rejects a non-string shared PVC storage class
+    set:
+      storage.data.storageClassName: true
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a string}
+
+  - it: rejects an invalid shared PVC storage class
+    set:
+      storage.data.storageClassName: storage.-invalid
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects multiline shared PVC storage-class injection
+    set:
+      storage.data.storageClassName: |-
+        storage.example
+        ---
+        apiVersion: v1
+        kind: Secret
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects a non-string MariaDB PVC storage class
+    set:
+      mariadb.persistence.storageClassName: false
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a string}
+
+  - it: rejects an invalid MariaDB PVC storage class
+    set:
+      mariadb.persistence.storageClassName: storage.-invalid
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects multiline MariaDB PVC storage-class injection
+    set:
+      mariadb.persistence.storageClassName: |-
+        storage.example
+        injected: true
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a valid DNS subdomain StorageClass name}

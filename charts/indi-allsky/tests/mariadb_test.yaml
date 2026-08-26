@@ -6,7 +6,7 @@ templates:
 release:
   name: test-release
 tests:
-  - it: binds one replica to the matching headless Service and RWO database volume
+  - it: binds one replica to the matching headless Service and standalone database claim
     asserts:
       - equal:
           path: metadata.name
@@ -23,15 +23,12 @@ tests:
       - equal:
           path: 'spec.template.metadata.labels["app.kubernetes.io/component"]'
           value: mariadb
+      - notExists: {path: spec.persistentVolumeClaimRetentionPolicy}
+      - notExists: {path: spec.volumeClaimTemplates}
+      - equal: {path: "spec.template.spec.volumes[2].name", value: database}
       - equal:
-          path: spec.volumeClaimTemplates[0].metadata.name
-          value: database
-      - equal:
-          path: spec.volumeClaimTemplates[0].spec.accessModes[0]
-          value: ReadWriteOnce
-      - equal:
-          path: spec.volumeClaimTemplates[0].spec.resources.requests.storage
-          value: 8Gi
+          path: spec.template.spec.volumes[2].persistentVolumeClaim.claimName
+          value: test-release-indi-allsky-mariadb-data
 
   - it: applies complete pod and container hardening with a bounded shutdown
     asserts:

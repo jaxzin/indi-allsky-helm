@@ -168,6 +168,58 @@ The shared PVC is mounted at `/var/www/html`. Application data lives under
 `/var/www/html/allsky`; database backups live in the sibling
 `/var/www/html/.state/backups`, outside the nginx docroot.
 
+### Storage lifecycle
+
+`storage.retentionPolicy` is either `Retain` (the safe default) or `Delete`.
+It applies symmetrically to every chart-generated part of the persistent
+recovery set:
+
+- `Retain` adds `helm.sh/resource-policy: keep` to both the generated shared
+  PVC and the standalone internal-MariaDB PVC.
+- `Delete` omits the keep annotation from both PVCs, so Helm deletes both on
+  uninstall.
+
+The MariaDB claim is a standalone Helm-managed PVC mounted into the StatefulSet;
+the chart deliberately does not rely on the StatefulSet PVC-retention field,
+which is not compatible with the chart's Kubernetes 1.26 floor. Scaling the
+single-replica database does not create or delete claims.
+
+The database, image archive, migration history, and sibling backups are useful
+as one coherent recovery set. Retaining only one generated PVC can leave an
+operator with images but no matching database, or a database without its
+migration history and image files, so one value governs both. A shared PVC
+selected through `storage.data.existingClaim` is never created, annotated, or
+otherwise modified by this chart. External-database mode creates no MariaDB
+PVC; the policy still applies to a chart-generated shared PVC.
+
+To intentionally remove generated storage during an automated uninstall,
+first run a CI-driven Helm upgrade setting `storage.retentionPolicy: Delete`.
+Wait for the release to apply, verify that neither generated PVC carries the
+Helm keep annotation, and only then let CI uninstall the release. Uninstalling
+while the value is `Retain` deliberately leaves both generated PVCs behind.
+
+For a retained reinstall, inventory and back up the PVCs first. Reuse the same
+release name, namespace, and storage settings so the generated shared-PVC and
+MariaDB-PVC names remain stable. A retained shared claim may instead be
+referenced through `storage.data.existingClaim`; the internal MariaDB claim has
+no arbitrary existing-claim value, so a differently named release must restore
+or migrate that database rather than silently adopting it. Any Helm ownership
+reconciliation must be codified and applied through CI, never performed as an
+ad-hoc metadata edit.
+
+`Delete` controls PVC deletion, not the final fate of the backing volume. After
+a PVC is deleted, the StorageClass/PersistentVolume reclaim policy remains
+authoritative: a `Retain` PV still requires the storage operator's normal
+recovery or cleanup workflow, while a `Delete` PV may remove the underlying
+storage.
+
+Both `storage.data.size` and `mariadb.persistence.size` must be non-empty
+strings; Kubernetes validates whether their text is a storage quantity. Both
+`storageClassName` values must be strings; an empty string selects the cluster
+default, while a non-empty value must be a valid DNS subdomain. The chart quotes
+all four scalar sinks in PVC manifests so a multiline value cannot add YAML
+documents or sibling fields.
+
 Pre-migration dumps are controlled by:
 
 ```yaml
