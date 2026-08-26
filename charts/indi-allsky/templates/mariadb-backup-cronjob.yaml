@@ -1,0 +1,140 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if and .Values.mariadb.enabled .Values.mariadb.backup.enabled -}}
+{{- $appUid := include "indi-allsky.appUid" . | int -}}
+{{- $startingDeadlineSeconds := 900 -}}
+{{- $successfulJobsHistoryLimit := 3 -}}
+{{- $failedJobsHistoryLimit := 3 -}}
+{{- $backoffLimit := 2 -}}
+{{- $activeDeadlineSeconds := 3600 -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "indi-allsky.backupCronJobName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.mariadb.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $backoffLimit }}
+      activeDeadlineSeconds: {{ $activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb-backup") | nindent 12 }}
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ $appUid }}
+            runAsGroup: {{ $appUid }}
+            fsGroup: {{ $appUid }}
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: dump
+              image: {{ .Values.mariadb.image | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: {{ $appUid }}
+                runAsGroup: {{ $appUid }}
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+              env:
+                - name: DB_HOST
+                  value: {{ include "indi-allsky.dbHost" . | quote }}
+                - name: DB_PORT
+                  value: {{ include "indi-allsky.mariadbPort" . | quote }}
+                - name: DB_USER
+                  value: {{ .Values.mariadb.username | quote }}
+                - name: DB_DATABASE
+                  value: {{ .Values.mariadb.database | quote }}
+                - name: MYSQL_PWD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "indi-allsky.envSecretName" . }}
+                      key: MARIADB_PASSWORD
+                - name: BACKUP_DIR
+                  value: {{ include "indi-allsky.backupPath" . | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.mariadb.backup.retentionDays | quote }}
+                - name: SCHEDULED_BACKUP_PREFIX
+                  value: indi-allsky_scheduled
+                - name: BACKUP_DIR_MODE
+                  value: "0700"
+                - name: BACKUP_FILE_MODE
+                  value: "0600"
+              command:
+                - /bin/bash
+                - -c
+              args:
+                - |
+                  set -Eeuo pipefail
+                  umask 077
+
+                  temporary_file=""
+                  cleanup() {
+                    if [ -n "$temporary_file" ]; then
+                      rm -f -- "$temporary_file"
+                    fi
+                  }
+                  trap cleanup EXIT INT TERM HUP
+
+                  mkdir -p -- "$BACKUP_DIR"
+                  chmod "$BACKUP_DIR_MODE" "$BACKUP_DIR"
+                  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  temporary_file="$(mktemp "${BACKUP_DIR}/.${SCHEDULED_BACKUP_PREFIX}_${timestamp}.XXXXXX.tmp")"
+                  temporary_name="${temporary_file##*/}"
+                  unique_suffix="${temporary_name%.tmp}"
+                  unique_suffix="${unique_suffix##*.}"
+                  final_file="${BACKUP_DIR}/${SCHEDULED_BACKUP_PREFIX}_${timestamp}_${unique_suffix}.sql.gz"
+
+                  mariadb-dump \
+                    --host="$DB_HOST" \
+                    --port="$DB_PORT" \
+                    --user="$DB_USER" \
+                    --single-transaction \
+                    --quick \
+                    --no-tablespaces \
+                    -- "$DB_DATABASE" | gzip -c > "$temporary_file"
+
+                  gzip -t "$temporary_file"
+                  if [ ! -s "$temporary_file" ]; then
+                    echo "FATAL: scheduled database dump is empty" >&2
+                    exit 1
+                  fi
+                  chmod "$BACKUP_FILE_MODE" "$temporary_file"
+                  mv -- "$temporary_file" "$final_file"
+                  temporary_file=""
+                  backup_size="$(wc -c < "$final_file" | tr -d '[:space:]')"
+                  printf 'Verified scheduled database backup: %s (%s bytes)\n' \
+                    "$final_file" "$backup_size"
+
+                  # Retention is deliberately restricted to this job's prefix.
+                  # migrate.sh owns the separate pre-migration dump lifecycle.
+                  find "$BACKUP_DIR" -maxdepth 1 -type f \
+                    -name "${SCHEDULED_BACKUP_PREFIX}_*.sql.gz" \
+                    -mtime "+${RETENTION_DAYS}" -delete
+              volumeMounts:
+                - name: data
+                  mountPath: {{ include "indi-allsky.dataMountPath" . }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "indi-allsky.dataPvcName" . }}
+{{- end }}

@@ -10,6 +10,7 @@
 - **A3 ⏳** — Batch 2 in progress; chart-repo issue #2 is the binding obligations ledger (incl. Batch 1 lessons-learned).
 - **Corrections found in execution** (this plan text deliberately NOT retro-edited; merged code + tracker are authoritative): the peeled-only `ls-remote` UPSTREAM_SHA resolve returns EMPTY on upstream's lightweight tag (use the two-pattern form); `UPSTREAM_SHA` was missing from A2's file list; `rhysd/actionlint` is not a `uses:`-able action (devops-actions wrapper used); `images.yml` dropped the `chart-v*` tags trigger (chart tags don't change image content — release-digest race); wildcard `--set` caused BOTH production failures (cache-ref collision, tagged-ref push-by-digest refusal) — per-target HCL helpers (`cache_from`/`cache_to`/`publish_tags`/`publish_output`) are now the pattern; `setup-helm`'s SHA pin doesn't pin helm (`version:` input required); `ct` runs with `check-version-increment: false` pre-1.0.
 - **Three deliberate exceptions to the no-retro-edit convention above**, made at the A3 review bench's request rather than by the author's choice, because leaving them would have propagated errors into work not yet started: Task A3 Step 6's target count (`5` → `6`), Step 4's Flask-Migrate rationale (`check` exists from 4.0.5, not 4.0.6 — the 4.0.6 floor comes from issue #2's acceptance criterion, not from feature availability), and Step 7's smoke command (a bare `--entrypoint python3` hits the system interpreter and fails; the venv interpreter plus the checkout as cwd are the contract). The convention still holds everywhere else: merged code and the tracker remain authoritative.
+- **A5 review-bench exceptions to that convention:** three stale, copyable excerpts were replaced with links to their authoritative implementations: the A3 `migrate.sh` excerpt and the A5 environment ConfigMap and application Secret excerpts. They predated the verified dump guard, centralized fail-fast validation, the complete environment contract, conditional external-database/OIDC behavior, and collision-safe resource naming. Keeping runnable-looking obsolete code would have contradicted the public operator contract; outside these named corrections, merged code and the tracker remain authoritative.
 
 > **For agentic workers:** implement this plan task-by-task with fresh-context workers and per-task review. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -310,7 +311,7 @@ Overlay images on the upstream-built ones: strip passwordless sudo, replace entr
   - DB: `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_DATABASE`, `INDIALLSKY_MARIADB_HOST`, `INDIALLSKY_MARIADB_PORT`, `INDIALLSKY_MARIADB_SSL`, `INDIALLSKY_MARIADB_CHARSET`, `INDIALLSKY_MARIADB_COLLATION`
   - Flask: `INDIALLSKY_FLASK_SECRET_KEY`, `INDIALLSKY_FLASK_PASSWORD_KEY`, `INDIALLSKY_FLASK_AUTH_ALL_VIEWS`, `INDIALLSKY_IMAGE_FOLDER`, `INDIALLSKY_MIGRATION_FOLDER`
   - OIDC (all optional): `INDIALLSKY_OIDC_ENABLE`, `INDIALLSKY_OIDC_PROVIDER_NAME`, `INDIALLSKY_OIDC_CLIENT_ID`, `INDIALLSKY_OIDC_CLIENT_SECRET`, `INDIALLSKY_OIDC_DISCOVERY_ENDPOINT`, `INDIALLSKY_OIDC_USERNAME_CLAIM`, `INDIALLSKY_OIDC_ALLOWED_GROUPS` (JSON array string), `INDIALLSKY_OIDC_ADMIN_GROUPS` (JSON array string), `INDIALLSKY_OIDC_AUTO_LOGIN`, `INDIALLSKY_LOCAL_AUTH_ENABLE`
-  - Seeding (web migrate only): `INDIALLSKY_WEB_USER`, `INDIALLSKY_WEB_PASS`, `INDIALLSKY_WEB_NAME`, `INDIALLSKY_WEB_EMAIL`, `INDIALLSKY_CONFIG_OVERLAY` (path, default `/etc/indi-allsky/config-overlay.json`)
+  - Seeding (web migrate only): `INDIALLSKY_WEB_USER`, `INDIALLSKY_WEB_PASS`, `INDIALLSKY_WEB_NAME`, `INDIALLSKY_WEB_EMAIL`, `INDIALLSKY_CONFIG_OVERLAY` (image default `/etc/indi-allsky/config-overlay.json`; A5 deliberately overrides it to the separately projected `/etc/indi-allsky-overlay/config-overlay.json`)
   - `migrate.sh` is the web image's migration/seed command (used as an initContainer command); `entrypoint-daemon.sh` waits for bootstrap via `config.py user_count`.
   - Both entrypoints write `flask.json` to `/etc/indi-allsky` — the chart must mount an emptyDir there.
 
@@ -378,84 +379,14 @@ json_pp < "${ALLSKY_ETC}/flask.json" >/dev/null
 
 - [ ] **Step 2: Write `images/web/migrate.sh`** (initContainer command — migrations, bootstrap, config overlay, optional admin seed)
 
-```bash
-#!/bin/bash
-set -o errexit
-set -o nounset
-
-/home/allsky/render-flask-config.sh
-cd /home/allsky/indi-allsky
-# shellcheck disable=SC1091
-source /home/allsky/venv/bin/activate
-
-echo "Waiting for database ${INDIALLSKY_MARIADB_HOST}:${INDIALLSKY_MARIADB_PORT}"
-until python3 -c "import socket; socket.create_connection(('${INDIALLSKY_MARIADB_HOST}', int('${INDIALLSKY_MARIADB_PORT}')), 3)" 2>/dev/null; do
-    sleep 3
-done
-
-# Alembic revisions are runtime-generated (upstream ships none); MIGRATION_FOLDER
-# must persist on the shared data PVC or `upgrade head` cannot find prior revisions.
-MIGRATION_FOLDER="${INDIALLSKY_MIGRATION_FOLDER:-/var/www/html/allsky/.state/migrations}"
-mkdir -p "$(dirname "$MIGRATION_FOLDER")"
-if [[ ! -d "$MIGRATION_FOLDER" ]]; then
-    flask db init
-fi
-
-# Guarded migrations (the maintainer's decision 2026-08-20; ordering per architect review):
-# apply pending revisions FIRST — alembic's `check` and `revision --autogenerate`
-# both error against a behind-head DB, which is exactly the upgrade case — then
-# dump + autogenerate only when the models genuinely differ from the live schema.
-# `flask db check` runs unredirected so its reason is visible in logs; a false
-# non-zero still lands in the dump-guarded branch. The web image pins
-# Flask-Migrate>=4.0.6 so the subcommand always exists. CI-committed revisions
-# replace all of this before the first UPSTREAM_VERSION bump (tracked issue).
-flask db upgrade head
-
-if flask db check; then
-    echo "Schema matches models; no migration needed"
-else
-    echo "Model changes detected; generating guarded migration"
-    if [ "${INDIALLSKY_PRE_MIGRATE_DUMP:-true}" == "true" ]; then
-        # Safety property: no schema mutation without a fresh dump. Disable via
-        # migrations.preMigrateDump=false only for least-privilege external DBs
-        # with DBA-managed backups. --single-transaction avoids read-locking the
-        # catalog against the running daemon.
-        DUMP_DIR="/var/www/html/allsky/.state/backups"
-        mkdir -p "$DUMP_DIR"
-        MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump \
-            --single-transaction --no-tablespaces \
-            -h "$INDIALLSKY_MARIADB_HOST" -P "$INDIALLSKY_MARIADB_PORT" \
-            -u "$MARIADB_USER" "$MARIADB_DATABASE" \
-            | gzip > "$DUMP_DIR/pre-migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
-        ls -1t "$DUMP_DIR"/pre-migrate_*.sql.gz | tail -n +8 | xargs -r rm --
-    fi
-    flask db revision --autogenerate
-    flask db upgrade head
-fi
-
-./config.py bootstrap || true   # exits 1 if config already exists
-
-# Apply the GitOps-owned config overlay (deep merge over the current config)
-OVERLAY="${INDIALLSKY_CONFIG_OVERLAY:-/etc/indi-allsky/config-overlay.json}"
-if [[ -f "$OVERLAY" ]]; then
-    TMP_DUMP=$(mktemp --suffix=.json)
-    TMP_MERGED=$(mktemp --suffix=.json)
-    ./config.py dump > "$TMP_DUMP"
-    jq -s '.[0] * .[1]' "$TMP_DUMP" "$OVERLAY" > "$TMP_MERGED"
-    ./config.py load -c "$TMP_MERGED" --force
-    rm -f "$TMP_DUMP" "$TMP_MERGED"
-fi
-
-# Seed a local admin only when local auth is on and credentials are provided
-if [ "${INDIALLSKY_LOCAL_AUTH_ENABLE:-true}" == "true" ] && [ -n "${INDIALLSKY_WEB_USER:-}" ]; then
-    USER_COUNT=$(./config.py user_count)
-    if [ "$USER_COUNT" -le 1 ]; then  # only the internal 'system' user exists
-        ./misc/usertool.py adduser -u "$INDIALLSKY_WEB_USER" -p "$INDIALLSKY_WEB_PASS" -f "${INDIALLSKY_WEB_NAME:-Admin}" -e "${INDIALLSKY_WEB_EMAIL:-admin@example.com}"
-        ./misc/usertool.py setadmin -u "$INDIALLSKY_WEB_USER"
-    fi
-fi
-echo "migrate.sh complete"
-```
+> **Review-bench correction:** the original illustrative shell excerpt was
+> removed because it remained copyable after the implementation gained strict
+> validation, bounded waits, verified dump handling, atomic config rendering,
+> and diagnostic bootstrap/seeding failures. The authoritative sources are
+> [`images/web/migrate.sh`](../../images/web/migrate.sh) and
+> [`images/shared/render-flask-config.sh`](../../images/shared/render-flask-config.sh);
+> their contract is summarized in
+> [`docs/container-contract.md`](../container-contract.md#migration-behaviour).
 
 - [ ] **Step 3: Write `images/web/entrypoint-web.sh` and `images/daemon/entrypoint-daemon.sh`**
 
@@ -472,7 +403,8 @@ source /home/allsky/venv/bin/activate
 
 export GUNICORN_ERROR_LOG_HANDLER=wsgi
 export INDIALLSKY_DOCKER=1
-export FORWARDED_ALLOW_IPS="${FORWARDED_ALLOW_IPS:-*}"
+# Deliberately leave FORWARDED_ALLOW_IPS unset. Gunicorn's localhost-only
+# default matches the nginx sidecar topology; the chart must not widen it.
 
 exec gunicorn \
     --bind 0.0.0.0:8000 \
@@ -751,6 +683,7 @@ credentials:
   adminPassword: ""
 
 storage:
+  retentionPolicy: Retain
   data:
     # RWX required whenever edge and web can land on different nodes
     existingClaim: ""
@@ -797,58 +730,17 @@ discovery:
 
 - [ ] **Step 3: _helpers.tpl**
 
-```yaml
-{{- define "indi-allsky.fullname" -}}
-{{- if contains .Chart.Name .Release.Name }}{{ .Release.Name | trunc 63 | trimSuffix "-" }}{{ else }}{{ printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}{{ end }}
-{{- end }}
-
-{{- define "indi-allsky.labels" -}}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{- define "indi-allsky.selectorLabels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{/* usage: {{ include "indi-allsky.componentLabels" (dict "ctx" . "component" "web") }} */}}
-{{- define "indi-allsky.componentLabels" -}}
-{{ include "indi-allsky.selectorLabels" .ctx }}
-app.kubernetes.io/component: {{ .component }}
-{{- end }}
-
-{{- define "indi-allsky.dataPvcName" -}}
-{{- if .Values.storage.data.existingClaim }}{{ .Values.storage.data.existingClaim }}{{ else }}{{ include "indi-allsky.fullname" . }}-data{{ end }}
-{{- end }}
-
-{{- define "indi-allsky.envSecretName" -}}
-{{- if .Values.credentials.existingSecret }}{{ .Values.credentials.existingSecret }}{{ else }}{{ include "indi-allsky.fullname" . }}-env{{ end }}
-{{- end }}
-
-{{- define "indi-allsky.envConfigMapName" -}}
-{{ include "indi-allsky.fullname" . }}-env
-{{- end }}
-
-{{- define "indi-allsky.dbHost" -}}
-{{- if .Values.mariadb.enabled }}{{ include "indi-allsky.fullname" . }}-mariadb{{ else }}{{ required "externalDatabase.host is required when mariadb.enabled=false" .Values.externalDatabase.host }}{{ end }}
-{{- end }}
-
-{{/* usage: {{ include "indi-allsky.image" (dict "ctx" . "name" "daemon") }} —
-     renders registry/indi-allsky-<name>@digest when a digest pin is set,
-     else registry/indi-allsky-<name>:tag (tag defaults to appVersion) */}}
-{{- define "indi-allsky.image" -}}
-{{- $digest := get .ctx.Values.image.digests .name -}}
-{{- if $digest -}}
-{{ .ctx.Values.image.registry }}/indi-allsky-{{ .name }}@{{ $digest }}
-{{- else -}}
-{{ .ctx.Values.image.registry }}/indi-allsky-{{ .name }}:{{ .ctx.Values.image.tag | default .ctx.Chart.AppVersion }}
-{{- end -}}
-{{- end }}
-```
+The implemented helper layer keeps labels/selectors and image digest selection
+centralized. Generated object names go through one collision-safe
+`resourceName` helper: DNS-label normalization and truncation append an
+eight-character hash derived from the original candidate, while preserving the
+semantic suffix. Dedicated helpers (`dataPvcName`, `envSecretName`,
+`envConfigMapName`, `overlayConfigMapName`, `mariadbName`,
+`mariadbServiceName`, `mariadbDataPvcName`, `mariadbRootSecretName`, and
+`backupCronJobName`) are the only names consumed by templates and
+cross-resource references. CronJob names use a 52-character ceiling; all other
+generated names use 63. Existing Secret and PVC names are validated as DNS
+subdomains before their helpers return them.
 
 - [ ] **Step 4: pvc-data.yaml and priorityclass.yaml**
 
@@ -858,16 +750,16 @@ app.kubernetes.io/component: {{ .component }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-data
+  name: {{ include "indi-allsky.dataPvcName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
   accessModes: {{- toYaml .Values.storage.data.accessModes | nindent 4 }}
   {{- with .Values.storage.data.storageClassName }}
-  storageClassName: {{ . }}
+  storageClassName: {{ . | quote }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.storage.data.size }}
+      storage: {{ .Values.storage.data.size | quote }}
 {{- end }}
 ```
 
@@ -877,7 +769,7 @@ spec:
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-capture
+  name: {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "capture" "maxLength" 63) }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 value: {{ .Values.edge.priorityClass.value }}
 globalDefault: false
@@ -968,12 +860,37 @@ jobs:
 
 **Files:**
 - Create: `charts/indi-allsky/templates/configmap-env.yaml`, `templates/secret-env.yaml`, `templates/configmap-overlay.yaml`
-- Create: `templates/mariadb-statefulset.yaml`, `templates/mariadb-service.yaml`, `templates/mariadb-backup-cronjob.yaml`
-- Create: `charts/indi-allsky/tests/env_test.yaml`, `tests/mariadb_test.yaml`
+- Create: `templates/secret-mariadb-root.yaml`, `templates/mariadb-statefulset.yaml`, `templates/mariadb-service.yaml`, `templates/mariadb-backup-cronjob.yaml`, `templates/pvc-mariadb.yaml`, `templates/validate.yaml`
+- Create: manifest-specific suites under `charts/indi-allsky/tests/` plus a centralized invalid-value suite and validation-wiring guard
 
 **Interfaces:**
 - Consumes: helpers + values from A4; container env contract from A3.
-- Produces: ConfigMap `<fullname>-env` (plain env), Secret `<fullname>-env` (secret env; skipped when `credentials.existingSecret`), ConfigMap `<fullname>-config-overlay` (key `config-overlay.json`), Service `<fullname>-mariadb:3306`. Pods in A6/A7 use `envFrom: [configMapRef <fullname>-env, secretRef (envSecretName)]` and mount the overlay at `/etc/indi-allsky/config-overlay.json` (subPath).
+- Produces: the plain env ConfigMap (`envConfigMapName`), application Secret
+  (`envSecretName`, skipped for `credentials.existingSecret`), isolated root
+  Secret (`mariadbRootSecretName`, skipped for its existing-Secret mode),
+  overlay ConfigMap (`overlayConfigMapName`, key `config-overlay.json`), and
+  headless MariaDB Service (`mariadbServiceName`, port 3306). The suffix-preserving
+  helpers, rather than string concatenation, are the naming contract. Pods in
+  A6/A7 use the env ConfigMap plus application Secret and project the overlay
+  separately at `/etc/indi-allsky-overlay/config-overlay.json` without
+  `subPath`.
+
+> **Approved implementation amendment (Batch 3 review bench):** the shared PVC
+> is mounted at `/var/www/html`, with app data under `allsky` and backups under
+> sibling `.state/backups`; MariaDB root credentials use a separate recoverable
+> Secret and file-backed `MARIADB_ROOT_PASSWORD_FILE`; the Service is headless;
+> and A6/A7 coordinate through the exact canonical-overlay checksum sentinel at
+> `/var/www/html/.state/config-overlay.applied`. These requirements supersede
+> the original illustrative excerpts wherever an excerpt is incomplete.
+
+> **Approved storage-lifecycle amendment:** `storage.retentionPolicy` is the
+> exact enum `Retain|Delete`, defaulting to `Retain`, and governs both generated
+> shared-data and internal-MariaDB PVCs. Both are standalone Helm-managed
+> claims and use Helm's keep annotation in `Retain` mode; `Delete` omits it from
+> both. This avoids the StatefulSet PVC-retention field, which is not compatible
+> with the Kubernetes 1.26 floor. Existing shared claims are never modified,
+> and external mode has no MariaDB PVC. PVC size and storage-class scalar sinks
+> are validated and quoted to prevent YAML document or sibling-field injection.
 
 - [ ] **Step 1: Failing unit tests**
 
@@ -1030,68 +947,26 @@ Run `helm unittest charts/indi-allsky` — expect the new suite to FAIL (templat
 
 - [ ] **Step 2: configmap-env.yaml**
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "indi-allsky.envConfigMapName" . }}
-  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
-data:
-  TZ: {{ .Values.timezone | quote }}
-  INDIALLSKY_MARIADB_HOST: {{ include "indi-allsky.dbHost" . | quote }}
-  INDIALLSKY_MARIADB_PORT: {{ (.Values.mariadb.enabled | ternary 3306 .Values.externalDatabase.port) | quote }}
-  INDIALLSKY_MARIADB_SSL: "false"
-  MARIADB_USER: {{ (.Values.mariadb.enabled | ternary .Values.mariadb.username .Values.externalDatabase.username) | quote }}
-  MARIADB_DATABASE: {{ (.Values.mariadb.enabled | ternary .Values.mariadb.database .Values.externalDatabase.database) | quote }}
-  INDIALLSKY_IMAGE_FOLDER: "/var/www/html/allsky/images"
-  INDIALLSKY_MIGRATION_FOLDER: "/var/www/html/allsky/.state/migrations"
-  INDIALLSKY_PRE_MIGRATE_DUMP: {{ .Values.migrations.preMigrateDump | quote }}
-  INDIALLSKY_FLASK_AUTH_ALL_VIEWS: {{ .Values.web.authAllViews | quote }}
-  INDIALLSKY_OIDC_ENABLE: {{ .Values.oidc.enabled | quote }}
-  INDIALLSKY_OIDC_PROVIDER_NAME: {{ .Values.oidc.providerName | quote }}
-  {{- if .Values.oidc.clientId }}
-  INDIALLSKY_OIDC_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
-  {{- end }}
-  {{- if .Values.oidc.discoveryEndpoint }}
-  INDIALLSKY_OIDC_DISCOVERY_ENDPOINT: {{ .Values.oidc.discoveryEndpoint | quote }}
-  {{- end }}
-  INDIALLSKY_OIDC_USERNAME_CLAIM: {{ .Values.oidc.usernameClaim | quote }}
-  INDIALLSKY_OIDC_ALLOWED_GROUPS: {{ .Values.oidc.allowedGroups | toJson | quote }}
-  INDIALLSKY_OIDC_ADMIN_GROUPS: {{ .Values.oidc.adminGroups | toJson | quote }}
-  INDIALLSKY_OIDC_AUTO_LOGIN: {{ .Values.oidc.autoLogin | quote }}
-  INDIALLSKY_LOCAL_AUTH_ENABLE: {{ .Values.oidc.localAuth | quote }}
-  {{- if .Values.adminUser.username }}
-  INDIALLSKY_WEB_USER: {{ .Values.adminUser.username | quote }}
-  INDIALLSKY_WEB_NAME: {{ .Values.adminUser.name | quote }}
-  INDIALLSKY_WEB_EMAIL: {{ .Values.adminUser.email | quote }}
-  {{- end }}
-  {{- if .Values.edge.darks.enabled }}
-  INDIALLSKY_DARK_CAPTURE_ENABLE: "true"
-  {{- end }}
-```
+> **Review-bench correction:** the original partial ConfigMap excerpt was
+> removed because it hard-coded external-database SSL and omitted parts of the
+> approved environment and checksum contracts. Use the authoritative
+> [`configmap-env.yaml`](../../charts/indi-allsky/templates/configmap-env.yaml),
+> with fail-fast rules in
+> [`_validate.tpl`](../../charts/indi-allsky/templates/_validate.tpl) and
+> executable coverage in
+> [`env_test.yaml`](../../charts/indi-allsky/tests/env_test.yaml) and
+> [`validation_test.yaml`](../../charts/indi-allsky/tests/validation_test.yaml).
 
-- [ ] **Step 3: secret-env.yaml** (rendered only without existingSecret; `required` guards give actionable errors)
+- [ ] **Step 3: secret-env.yaml** (rendered only without existingSecret;
+  centralized validation gives actionable errors)
 
-```yaml
-{{- if not .Values.credentials.existingSecret }}
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ include "indi-allsky.fullname" . }}-env
-  labels: {{- include "indi-allsky.labels" . | nindent 4 }}
-type: Opaque
-stringData:
-  INDIALLSKY_FLASK_SECRET_KEY: {{ required "credentials.flaskSecretKey (or existingSecret) is required" .Values.credentials.flaskSecretKey | quote }}
-  INDIALLSKY_FLASK_PASSWORD_KEY: {{ required "credentials.flaskPasswordKey (or existingSecret) is required" .Values.credentials.flaskPasswordKey | quote }}
-  MARIADB_PASSWORD: {{ required "credentials.mariadbPassword (or existingSecret) is required" .Values.credentials.mariadbPassword | quote }}
-  {{- if .Values.oidc.clientSecret }}
-  INDIALLSKY_OIDC_CLIENT_SECRET: {{ .Values.oidc.clientSecret | quote }}
-  {{- end }}
-  {{- if .Values.credentials.adminPassword }}
-  INDIALLSKY_WEB_PASS: {{ .Values.credentials.adminPassword | quote }}
-  {{- end }}
-{{- end }}
-```
+> **Review-bench correction:** the original Secret excerpt predated the
+> separate root-credential contract, opaque existing-Secret mode, conditional
+> OIDC/admin requirements, and collision-safe names. Use the authoritative
+> [`secret-env.yaml`](../../charts/indi-allsky/templates/secret-env.yaml),
+> centralized validation in
+> [`_validate.tpl`](../../charts/indi-allsky/templates/_validate.tpl), and
+> [`secret_test.yaml`](../../charts/indi-allsky/tests/secret_test.yaml).
 
 - [ ] **Step 4: configmap-overlay.yaml** (chart-managed keys merged over `.Values.appConfig`; chart wins)
 
@@ -1099,7 +974,7 @@ stringData:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-config-overlay
+  name: {{ include "indi-allsky.overlayConfigMapName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 data:
   config-overlay.json: |
@@ -1117,10 +992,10 @@ data:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-mariadb
+  name: {{ include "indi-allsky.mariadbName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "indi-allsky.fullname" . }}-mariadb
+  serviceName: {{ include "indi-allsky.mariadbServiceName" . }}
   replicas: 1
   selector:
     matchLabels: {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
@@ -1138,17 +1013,13 @@ spec:
           image: {{ .Values.mariadb.image }}
           args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
           env:
-            - name: MARIADB_RANDOM_ROOT_PASSWORD
-              value: "yes"
             - name: MARIADB_DATABASE
               value: {{ .Values.mariadb.database | quote }}
             - name: MARIADB_USER
               value: {{ .Values.mariadb.username | quote }}
-            - name: MARIADB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "indi-allsky.envSecretName" . }}
-                  key: MARIADB_PASSWORD
+            - { name: MARIADB_PASSWORD_FILE, value: /run/secrets/app/MARIADB_PASSWORD }
+            - { name: MARIADB_ROOT_PASSWORD_FILE, value: /run/secrets/root/MARIADB_ROOT_PASSWORD }
+            - { name: MARIADB_ROOT_HOST, value: localhost }
           ports: [{ containerPort: 3306, name: mysql }]
           livenessProbe:
             exec: { command: [healthcheck.sh, --connect, --innodb_initialized] }
@@ -1161,15 +1032,32 @@ spec:
           {{- with .Values.mariadb.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
-          volumeMounts: [{ name: db, mountPath: /var/lib/mysql }]
-  volumeClaimTemplates:
-    - metadata: { name: db }
-      spec:
-        accessModes: [ReadWriteOnce]
-        {{- with .Values.mariadb.persistence.storageClassName }}
-        storageClassName: {{ . }}
-        {{- end }}
-        resources: { requests: { storage: {{ .Values.mariadb.persistence.size }} } }
+          volumeMounts: [{ name: database, mountPath: /var/lib/mysql }]
+      volumes:
+        - name: database
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.mariadbDataPvcName" . }}
+{{- end }}
+```
+
+```yaml
+# templates/pvc-mariadb.yaml
+{{- if .Values.mariadb.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "indi-allsky.mariadbDataPvcName" . }}
+  {{- if eq .Values.storage.retentionPolicy "Retain" }}
+  annotations: { helm.sh/resource-policy: keep }
+  {{- end }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.mariadb.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mariadb.persistence.size | quote }}
 {{- end }}
 ```
 
@@ -1179,9 +1067,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-mariadb
+  name: {{ include "indi-allsky.mariadbServiceName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
+  clusterIP: None
   ports: [{ port: 3306, targetPort: mysql, name: mysql }]
   selector: {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 4 }}
 {{- end }}
@@ -1193,7 +1082,7 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-db-backup
+  name: {{ include "indi-allsky.backupCronJobName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.mariadb.backup.schedule | quote }}
@@ -1202,24 +1091,23 @@ spec:
     spec:
       template:
         spec:
-          restartPolicy: OnFailure
+          restartPolicy: Never
           securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001 }
           containers:
             - name: dump
               image: {{ .Values.mariadb.image }}
-              envFrom:
-                - configMapRef: { name: {{ include "indi-allsky.envConfigMapName" . }} }
-                - secretRef: { name: {{ include "indi-allsky.envSecretName" . }} }
-              command: [/bin/bash, -ec]
+              # Explicit DB fields only; never envFrom and never the root Secret.
+              command: [/bin/bash, -c]
               args:
                 - |
-                  mkdir -p /data/.state/backups
-                  mariadb-dump -h "$INDIALLSKY_MARIADB_HOST" -u "$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" \
-                    | gzip > "/data/.state/backups/indi-allsky_$(date +%Y%m%d_%H%M%S).sql.gz"
-                  # scoped to this job's own prefix — migrate.sh's pre-migrate_* dumps
-                  # have their own count-based retention and must not be swept here
-                  find /data/.state/backups -name 'indi-allsky_*.sql.gz' -mtime +{{ .Values.mariadb.backup.retentionDays }} -delete
-              volumeMounts: [{ name: data, mountPath: /data }]
+                  set -Eeuo pipefail
+                  umask 077
+                  # The implemented script uses mktemp + trap, MYSQL_PWD,
+                  # mariadb-dump --single-transaction --quick --no-tablespaces
+                  # -- "$DB_DATABASE", gzip/non-empty verification, mode 0600,
+                  # a unique atomic rename, a verified-success log, then
+                  # prefix-scoped retention for indi-allsky_scheduled_* only.
+              volumeMounts: [{ name: data, mountPath: /var/www/html }]
           volumes:
             - name: data
               persistentVolumeClaim: { claimName: {{ include "indi-allsky.dataPvcName" . }} }
@@ -1233,17 +1121,11 @@ spec:
 suite: mariadb
 templates: [mariadb-statefulset.yaml, mariadb-service.yaml, mariadb-backup-cronjob.yaml]
 tests:
-  - it: renders by default without backup
-    asserts:
-      - hasDocuments: { count: 2 }
-  - it: disabled entirely with external db
-    set: { mariadb.enabled: false }
-    asserts:
-      - hasDocuments: { count: 0 }
-  - it: backup cronjob renders when enabled
-    set: { mariadb.backup.enabled: true }
-    asserts:
-      - hasDocuments: { count: 3 }
+  # The implemented suites select each manifest independently. They assert the
+  # headless Service, isolated root Secret, full pod/container hardening,
+  # file-backed credentials, probes, backup command safety/order, external-mode
+  # omission, max-length names, and invalid/unset/malformed boundaries. Document
+  # counts across a multi-template suite are not used as structural evidence.
 ```
 
 - [ ] **Step 7: Run `helm unittest charts/indi-allsky` → all suites pass; `helm lint` clean. Commit on `claude/chart-db-env`, PR, merge.** Evidence: chart-ci green.
@@ -1259,6 +1141,18 @@ tests:
 **Interfaces:**
 - Consumes: env ConfigMap/Secret + overlay ConfigMap (A5), data PVC (A4), images (A3: `migrate.sh`, `entrypoint-web.sh`).
 - Produces: Service `<fullname>-web` on `web.service.port` → nginx 8080; deployment name `<fullname>-web`. The e2e (A9) curls `/indi-allsky/js/latest` through this Service.
+
+> **Binding A5 handoff:** the web pod consumes the application Secret only,
+> never the MariaDB root Secret. After `migrate.sh` has completed migration,
+> bootstrap, overlay application, and optional admin seeding successfully, its
+> migration initContainer writes
+> `INDIALLSKY_CONFIG_OVERLAY_SHA256` plus one newline to a temporary file beside
+> `INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL`, then atomically renames it over
+> that fixed sentinel. No failure path may update the sentinel.
+>
+> This checksum orders overlay revisions only. It is not proof that an
+> image/schema-only upgrade with unchanged overlay bytes has completed; issue
+> #9 owns the general migration-order decision and upgrade-path e2e.
 
 - [ ] **Step 1: Failing unit tests**
 
@@ -1382,7 +1276,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
         checksum/env: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
-        checksum/overlay: {{ include (print $.Template.BasePath "/configmap-overlay.yaml") . | sha256sum }}
+        checksum/overlay: {{ include "indi-allsky.overlayChecksum" . }}
         checksum/nginx: {{ include (print $.Template.BasePath "/configmap-nginx.yaml") . | sha256sum }}
     spec:
       {{- with .Values.image.pullSecrets }}
@@ -1404,9 +1298,9 @@ spec:
             - configMapRef: { name: {{ include "indi-allsky.envConfigMapName" . }} }
             - secretRef: { name: {{ include "indi-allsky.envSecretName" . }} }
           volumeMounts: &webmounts
-            - { name: data, mountPath: /var/www/html/allsky }
+            - { name: data, mountPath: /var/www/html }
             - { name: etc, mountPath: /etc/indi-allsky }
-            - { name: overlay, mountPath: /etc/indi-allsky/config-overlay.json, subPath: config-overlay.json }
+            - { name: overlay, mountPath: /etc/indi-allsky-overlay, readOnly: true }
         - name: static-copy
           image: '{{ include "indi-allsky.image" (dict "ctx" . "name" "web") }}'
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -1442,9 +1336,9 @@ spec:
         - name: data
           persistentVolumeClaim: { claimName: {{ include "indi-allsky.dataPvcName" . }} }
         - name: etc
-          emptyDir: {}
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
         - name: overlay
-          configMap: { name: {{ include "indi-allsky.fullname" . }}-config-overlay }
+          configMap: { name: {{ include "indi-allsky.overlayConfigMapName" . }} }
         - name: static-share
           emptyDir: {}
         - name: nginx-conf
@@ -1516,6 +1410,19 @@ spec:
 **Interfaces:**
 - Consumes: env/overlay (A5), PVC + priorityclass (A4), images (A3).
 - Produces: Deployment `<fullname>-edge`; container names `daemon` and (sidecar mode) `indiserver`. e2e (A9) execs into `daemon`.
+
+> **Binding A5 handoff:** the edge pod consumes the application Secret only,
+> never the MariaDB root Secret. Before invoking the daemon entrypoint, A7 owns
+> a separate bounded wait that reads the fixed applied sentinel from the shared
+> parent volume, removes at most one trailing newline, and requires exact
+> equality with `INDIALLSKY_CONFIG_OVERLAY_SHA256`. It reports missing, stale,
+> empty, and malformed content diagnostically and exits on timeout. After this
+> overlay-version gate passes, the daemon entrypoint's existing bounded
+> `config.py dumpfile` loop remains the separate database/bootstrap gate.
+>
+> A matching sentinel does not order an image/schema-only upgrade when the
+> canonical overlay is unchanged. A7 must not treat it as a migration epoch;
+> issue #9 owns the general migration-order decision and upgrade-path e2e.
 
 - [ ] **Step 1: Failing unit tests**
 
@@ -1592,7 +1499,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
         checksum/env: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
-        checksum/overlay: {{ include (print $.Template.BasePath "/configmap-overlay.yaml") . | sha256sum }}
+        # Expected checksum is compared against the fixed applied sentinel on
+        # the shared parent volume before capture starts.
+        checksum/overlay: {{ include "indi-allsky.overlayChecksum" . }}
     spec:
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
@@ -1606,7 +1515,7 @@ spec:
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- if .Values.edge.priorityClass.create }}
-      priorityClassName: {{ include "indi-allsky.fullname" . }}-capture
+      priorityClassName: {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "capture" "maxLength" 63) }}
       {{- end }}
       securityContext:
         runAsUser: 10001
@@ -1652,7 +1561,7 @@ spec:
             {{- toYaml .Values.edge.resources | nindent 12 }}
             {{- end }}
           volumeMounts:
-            - { name: data, mountPath: /var/www/html/allsky }
+            - { name: data, mountPath: /var/www/html }
             - { name: etc, mountPath: /etc/indi-allsky }
             - { name: varlib, mountPath: /var/lib/indi-allsky }
             - { name: tmp, mountPath: /tmp }
@@ -1707,7 +1616,7 @@ spec:
         - name: data
           persistentVolumeClaim: { claimName: {{ include "indi-allsky.dataPvcName" . }} }
         - name: etc
-          emptyDir: {}
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
         - name: varlib
           emptyDir: {}   # pidfile + test-camera state; per-pod is correct
         - name: tmp

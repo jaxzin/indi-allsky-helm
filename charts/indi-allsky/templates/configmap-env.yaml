@@ -1,0 +1,66 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- $dbPort := include "indi-allsky.mariadbPort" . -}}
+{{- $dbUser := .Values.mariadb.username -}}
+{{- $dbName := .Values.mariadb.database -}}
+{{- $dbSsl := false -}}
+{{- $dbCharset := "utf8mb4" -}}
+{{- $dbCollation := "utf8mb4_unicode_ci" -}}
+{{- if not .Values.mariadb.enabled -}}
+  {{- $dbPort = toString .Values.externalDatabase.port -}}
+  {{- $dbUser = .Values.externalDatabase.username -}}
+  {{- $dbName = .Values.externalDatabase.database -}}
+  {{- $dbSsl = .Values.externalDatabase.ssl -}}
+  {{- $dbCharset = .Values.externalDatabase.charset -}}
+  {{- $dbCollation = .Values.externalDatabase.collation -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "indi-allsky.envConfigMapName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+data:
+  TZ: {{ .Values.timezone | quote }}
+  INDIALLSKY_MARIADB_HOST: {{ include "indi-allsky.dbHost" . | quote }}
+  INDIALLSKY_MARIADB_PORT: {{ $dbPort | quote }}
+  INDIALLSKY_MARIADB_SSL: {{ $dbSsl | quote }}
+  INDIALLSKY_MARIADB_CHARSET: {{ $dbCharset | quote }}
+  INDIALLSKY_MARIADB_COLLATION: {{ $dbCollation | quote }}
+  MARIADB_USER: {{ $dbUser | quote }}
+  MARIADB_DATABASE: {{ $dbName | quote }}
+  INDIALLSKY_IMAGE_FOLDER: {{ include "indi-allsky.imagePath" . | quote }}
+  INDIALLSKY_MIGRATION_FOLDER: {{ include "indi-allsky.migrationPath" . | quote }}
+  INDIALLSKY_BACKUP_DIR: {{ include "indi-allsky.backupPath" . | quote }}
+  INDIALLSKY_PRE_MIGRATE_DUMP: {{ .Values.migrations.preMigrateDump | quote }}
+  INDIALLSKY_PRE_MIGRATE_DUMP_KEEP: {{ .Values.migrations.preMigrateDumpKeep | quote }}
+  INDIALLSKY_FLASK_AUTH_ALL_VIEWS: {{ .Values.web.authAllViews | quote }}
+  INDIALLSKY_FLASK_SESSION_COOKIE_SECURE: {{ .Values.web.sessionCookieSecure | quote }}
+  INDIALLSKY_ADMIN_NETWORKS: {{ .Values.web.adminNetworks | toJson | quote }}
+  INDIALLSKY_OIDC_ENABLE: {{ .Values.oidc.enabled | quote }}
+  INDIALLSKY_OIDC_PROVIDER_NAME: {{ .Values.oidc.providerName | quote }}
+  {{- with .Values.oidc.clientId }}
+  INDIALLSKY_OIDC_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.oidc.discoveryEndpoint }}
+  INDIALLSKY_OIDC_DISCOVERY_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  INDIALLSKY_OIDC_USERNAME_CLAIM: {{ .Values.oidc.usernameClaim | quote }}
+  INDIALLSKY_OIDC_ALLOWED_GROUPS: {{ .Values.oidc.allowedGroups | toJson | quote }}
+  INDIALLSKY_OIDC_ADMIN_GROUPS: {{ .Values.oidc.adminGroups | toJson | quote }}
+  INDIALLSKY_OIDC_AUTO_LOGIN: {{ .Values.oidc.autoLogin | quote }}
+  INDIALLSKY_LOCAL_AUTH_ENABLE: {{ .Values.oidc.localAuth | quote }}
+  {{- with .Values.adminUser.username }}
+  INDIALLSKY_WEB_USER: {{ . | quote }}
+  INDIALLSKY_WEB_NAME: {{ $.Values.adminUser.name | quote }}
+  INDIALLSKY_WEB_EMAIL: {{ $.Values.adminUser.email | quote }}
+  {{- end }}
+  INDIALLSKY_CONFIG_OVERLAY: {{ include "indi-allsky.overlayPath" . | quote }}
+  INDIALLSKY_CONFIG_OVERLAY_SHA256: {{ include "indi-allsky.overlayChecksum" . | quote }}
+  INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL: {{ include "indi-allsky.overlaySentinelPath" . | quote }}
+  INDIALLSKY_DARK_CAPTURE_ENABLE: {{ .Values.edge.darks.enabled | quote }}
+  INDIALLSKY_DARK_CAPTURE_DAYTIME: {{ .Values.edge.darks.daytime | quote }}
+  INDIALLSKY_DARK_CAPTURE_BITMAX: {{ .Values.edge.darks.bitmax | quote }}
+  INDIALLSKY_DARK_CAPTURE_MODE: {{ .Values.edge.darks.mode | quote }}
+  {{- with .Values.edge.captureTmpDir }}
+  CAPTURE_TMPDIR: {{ . | quote }}
+  {{- end }}

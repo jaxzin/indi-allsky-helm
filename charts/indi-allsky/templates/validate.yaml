@@ -1,0 +1,2 @@
+{{- /* Executable validation target for helm-unittest and direct render matrices. */ -}}
+{{- include "indi-allsky.validateValues" . -}}

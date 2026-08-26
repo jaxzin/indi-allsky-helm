@@ -1,0 +1,7 @@
+credentials:
+  flaskSecretKey: test-flask-secret
+  flaskPasswordKey: test-password-key
+  mariadbPassword: test-database-password
+mariadb:
+  rootCredentials:
+    password: test-root-password

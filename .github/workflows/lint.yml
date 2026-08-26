@@ -42,6 +42,13 @@ jobs:
         if: steps.files.outputs.found == 'true'
         with:
           scandir: ./images
+      - name: Find chart test shell scripts
+        run: |
+          find charts/indi-allsky/tests -name '*.sh' -type f -print
+          test -n "$(find charts/indi-allsky/tests -name '*.sh' -type f -print -quit)"
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          scandir: ./charts/indi-allsky/tests
 
   hadolint:
     runs-on: ubuntu-24.04

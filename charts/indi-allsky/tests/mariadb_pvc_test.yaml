@@ -1,0 +1,50 @@
+suite: standalone MariaDB data PVC
+values:
+  - a5-values.yaml
+templates:
+  - pvc-mariadb.yaml
+release:
+  name: test-release
+tests:
+  - it: renders a generated RWO database claim in internal mode
+    asserts:
+      - equal: {path: metadata.name, value: test-release-indi-allsky-mariadb-data}
+      - equal: {path: "spec.accessModes[0]", value: ReadWriteOnce}
+      - equal: {path: spec.resources.requests.storage, value: 8Gi}
+      - notExists: {path: spec.storageClassName}
+
+  - it: renders configured database storage
+    set:
+      mariadb.persistence.storageClassName: database.storage.example
+      mariadb.persistence.size: 32Gi
+    asserts:
+      - equal: {path: spec.storageClassName, value: database.storage.example}
+      - equal: {path: spec.resources.requests.storage, value: 32Gi}
+
+  - it: quotes a multiline size so it cannot add documents or sibling fields
+    set:
+      mariadb.persistence.size: |-
+        8Gi
+        injected: true
+        ---
+        apiVersion: v1
+        kind: Secret
+    asserts:
+      - hasDocuments: {count: 1}
+      - equal:
+          path: spec.resources.requests.storage
+          value: |-
+            8Gi
+            injected: true
+            ---
+            apiVersion: v1
+            kind: Secret
+      - notExists: {path: spec.resources.requests.injected}
+
+  - it: is omitted in external database mode
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+    asserts:
+      - hasDocuments: {count: 0}

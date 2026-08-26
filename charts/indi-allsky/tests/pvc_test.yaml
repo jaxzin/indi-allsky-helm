@@ -1,11 +1,37 @@
 suite: data pvc
+values:
+  - a5-values.yaml
 templates: [pvc-data.yaml]
 tests:
   - it: renders an RWX PVC by default
     asserts:
       - equal: { path: "spec.accessModes[0]", value: ReadWriteMany }
       - equal: { path: spec.resources.requests.storage, value: 100Gi }
+  - it: quotes a multiline size so it cannot add documents or sibling fields
+    set:
+      storage.data.size: |-
+        100Gi
+        injected: true
+        ---
+        apiVersion: v1
+        kind: Secret
+    asserts:
+      - hasDocuments: { count: 1 }
+      - equal:
+          path: spec.resources.requests.storage
+          value: |-
+            100Gi
+            injected: true
+            ---
+            apiVersion: v1
+            kind: Secret
+      - notExists: { path: spec.resources.requests.injected }
+  - it: accepts a dotted DNS-subdomain storage class
+    set:
+      storage.data.storageClassName: shared.storage.example
+    asserts:
+      - equal: { path: spec.storageClassName, value: shared.storage.example }
   - it: is omitted when existingClaim is set
-    set: { storage.data.existingClaim: my-claim }
+    set: { storage.data.existingClaim: data.example }
     asserts:
       - hasDocuments: { count: 0 }

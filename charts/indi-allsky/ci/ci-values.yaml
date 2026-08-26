@@ -8,3 +8,6 @@ credentials:
   flaskSecretKey: ci-dummy
   flaskPasswordKey: ci-dummy
   mariadbPassword: ci-dummy
+mariadb:
+  rootCredentials:
+    password: ci-root-dummy

@@ -1,0 +1,933 @@
+suite: centralized A5 value validation
+values:
+  - a5-values.yaml
+templates:
+  - validate.yaml
+release:
+  name: test-release
+tests:
+  - it: accepts the complete default internal mode
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: accepts opaque existing application and root Secrets
+    set:
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      mariadb.rootCredentials.existingSecret: existing-root-secret
+      mariadb.rootCredentials.password: ""
+      oidc.enabled: true
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: accepts an existing application Secret as the opaque OIDC and admin source
+    set:
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      oidc.enabled: true
+      adminUser.username: admin
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: rejects a non-object appConfig actionably
+    set:
+      appConfig: []
+    asserts:
+      - failedTemplate:
+          errorMessage: appConfig must be a map/object
+
+  - it: rejects image pull secrets when the value is not a list
+    set:
+      image.pullSecrets:
+        name: registry-auth
+    asserts:
+      - failedTemplate:
+          errorMessage: image.pullSecrets must be a list of objects containing only a non-empty string name
+
+  - it: rejects a scalar image pull secret entry
+    set:
+      image.pullSecrets:
+        - registry-auth
+    asserts:
+      - failedTemplate:
+          errorMessage: image.pullSecrets[0] must be an object containing only a non-empty string name
+
+  - it: rejects an empty image pull secret name
+    set:
+      image.pullSecrets:
+        - name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: image.pullSecrets[0].name must be a non-empty string
+
+  - it: rejects extra image pull secret fields
+    set:
+      image.pullSecrets:
+        - name: registry-auth
+          namespace: default
+    asserts:
+      - failedTemplate:
+          errorMessage: image.pullSecrets[0] must contain only the name field
+
+  - it: rejects an invalid image pull Secret name
+    set:
+      image.pullSecrets:
+        - name: Invalid_Name
+    asserts:
+      - failedTemplate:
+          errorMessage: image.pullSecrets[0].name must be a valid DNS subdomain Secret name
+
+  - it: rejects a non-string existing data claim
+    set:
+      storage.data.existingClaim: true
+    asserts:
+      - failedTemplate:
+          errorMessage: storage.data.existingClaim must be a string
+
+  - it: rejects an invalid existing data claim name
+    set:
+      storage.data.existingClaim: data.-invalid
+    asserts:
+      - failedTemplate:
+          errorMessage: storage.data.existingClaim must be a valid DNS subdomain PersistentVolumeClaim name
+
+  - it: accepts a dotted existing data claim name
+    set:
+      storage.data.existingClaim: data.example
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: rejects a missing Flask signing key in inline mode
+    set:
+      credentials.flaskSecretKey: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.flaskSecretKey (or credentials.existingSecret) is required
+
+  - it: rejects a missing Flask password key in inline mode
+    set:
+      credentials.flaskPasswordKey: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.flaskPasswordKey (or credentials.existingSecret) is required
+
+  - it: rejects a missing application database password in inline mode
+    set:
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.mariadbPassword (or credentials.existingSecret) is required
+
+  - it: rejects an inline Flask signing key with the wrong type
+    set:
+      credentials.flaskSecretKey: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.flaskSecretKey must be a string
+
+  - it: rejects an inline Flask password key with the wrong type
+    set:
+      credentials.flaskPasswordKey: true
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.flaskPasswordKey must be a string
+
+  - it: rejects an inline application database password with the wrong type
+    set:
+      credentials.mariadbPassword: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.mariadbPassword must be a string
+
+  - it: rejects an inline root password with the wrong type
+    set:
+      mariadb.rootCredentials.password: true
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.rootCredentials.password must be a string
+
+  - it: rejects an inline OIDC secret with the wrong type
+    set:
+      oidc.clientSecret: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.clientSecret must be a string
+
+  - it: rejects an inline admin password with the wrong type
+    set:
+      credentials.adminPassword: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.adminPassword must be a string
+
+  - it: rejects mixed application existing and inline secret sources
+    set:
+      credentials.existingSecret: existing-app-secret
+    asserts:
+      - failedTemplate:
+          errorMessage: inline application secret values must be empty when credentials.existingSecret is set
+
+  - it: rejects an OIDC client secret mixed with the application existing Secret
+    set:
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      oidc.clientSecret: mixed-secret
+    asserts:
+      - failedTemplate:
+          errorMessage: inline application secret values must be empty when credentials.existingSecret is set
+
+  - it: rejects missing internal root credentials
+    set:
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.rootCredentials.password (or mariadb.rootCredentials.existingSecret) is required when mariadb.enabled=true
+
+  - it: rejects mixed root existing and inline credentials
+    set:
+      mariadb.rootCredentials.existingSecret: existing-root-secret
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.rootCredentials.password must be empty when mariadb.rootCredentials.existingSecret is set
+
+  - it: rejects a generated root Secret colliding with the application existing Secret
+    set:
+      credentials.existingSecret: test-release-indi-allsky-mariadb-root
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: the resolved application and MariaDB root Secret names must be different
+
+  - it: rejects a generated application Secret colliding with the root existing Secret
+    set:
+      mariadb.rootCredentials.existingSecret: test-release-indi-allsky-env
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: the resolved application and MariaDB root Secret names must be different
+
+  - it: rejects the same existing Secret for application and root credentials
+    set:
+      credentials.existingSecret: shared-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      mariadb.rootCredentials.existingSecret: shared-secret
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: the resolved application and MariaDB root Secret names must be different
+
+  - it: rejects a leading-hyphen Secret label
+    set:
+      credentials.existingSecret: -invalid
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.existingSecret must be a valid DNS subdomain Secret name
+
+  - it: rejects a trailing-hyphen Secret label
+    set:
+      credentials.existingSecret: invalid-
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.existingSecret must be a valid DNS subdomain Secret name
+
+  - it: rejects a Secret label longer than 63 characters
+    set:
+      credentials.existingSecret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.existingSecret must be a valid DNS subdomain Secret name
+
+  - it: rejects a Secret name longer than 253 characters
+    set:
+      credentials.existingSecret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.a
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.existingSecret must be at most 253 characters
+
+  - it: rejects OIDC inline mode without a client id
+    set:
+      oidc.enabled: true
+      oidc.discoveryEndpoint: https://idp.example.com/.well-known/openid-configuration
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.clientId (or credentials.existingSecret) is required when oidc.enabled=true
+
+  - it: rejects OIDC inline mode without a discovery endpoint
+    set:
+      oidc.enabled: true
+      oidc.clientId: test-client
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.discoveryEndpoint (or credentials.existingSecret) is required when oidc.enabled=true
+
+  - it: rejects disabling local auth without OIDC
+    set:
+      oidc.localAuth: false
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.localAuth=false requires oidc.enabled=true so a login method remains available
+
+  - it: rejects OIDC auto login when OIDC is disabled
+    set:
+      oidc.autoLogin: true
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.autoLogin=true requires oidc.enabled=true
+
+  - it: rejects an OIDC client secret when OIDC is disabled
+    set:
+      oidc.clientSecret: unused-secret
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.clientSecret must be empty when oidc.enabled=false
+
+  - it: rejects an OIDC groups value that is not a list
+    set:
+      oidc.allowedGroups: administrators
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.allowedGroups must be a list of strings
+
+  - it: rejects a non-string OIDC client id
+    set:
+      oidc.clientId: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.clientId must be a string
+
+  - it: rejects a non-string OIDC discovery endpoint
+    set:
+      oidc.discoveryEndpoint: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.discoveryEndpoint must be a string
+
+  - it: rejects an empty OIDC username claim
+    set:
+      oidc.usernameClaim: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.usernameClaim must be set and non-empty
+
+  - it: rejects a non-string OIDC group entry
+    set:
+      oidc.allowedGroups:
+        - 123
+    asserts:
+      - failedTemplate:
+          errorMessage: oidc.allowedGroups[0] must be a non-empty string
+
+  - it: rejects an admin networks value that is not a list
+    set:
+      web.adminNetworks: 192.0.2.0/24
+    asserts:
+      - failedTemplate:
+          errorMessage: web.adminNetworks must be a list of strings
+
+  - it: rejects an admin seed without an inline password
+    set:
+      adminUser.username: admin
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.adminPassword must be at least 8 characters when seeding adminUser.username
+
+  - it: rejects an empty admin display name when seeding
+    set:
+      adminUser.username: admin
+      adminUser.name: ""
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.name must be set and non-empty when seeding adminUser.username
+
+  - it: rejects a non-string admin username actionably
+    set:
+      adminUser.username: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.username must be a string
+
+  - it: rejects a non-string admin display name actionably
+    set:
+      adminUser.name: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.name must be a string
+
+  - it: rejects a non-string admin email actionably
+    set:
+      adminUser.email: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.email must be a string
+
+  - it: rejects an invalid admin email
+    set:
+      adminUser.username: admin
+      adminUser.email: invalid-address
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.email must be a valid email address
+
+  - it: rejects an admin seed while local auth is disabled
+    set:
+      oidc.enabled: true
+      oidc.localAuth: false
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      adminUser.username: admin
+    asserts:
+      - failedTemplate:
+          errorMessage: adminUser.username must be empty when oidc.localAuth=false
+
+  - it: rejects an admin password when no admin user is configured
+    set:
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - failedTemplate:
+          errorMessage: credentials.adminPassword must be empty when adminUser.username is empty
+
+  - it: rejects a non-boolean database mode
+    set:
+      mariadb.enabled: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.enabled must be a boolean
+
+  - it: rejects a malformed internal database name
+    set:
+      mariadb.database: bad database
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.database may contain only letters, digits, underscore, hyphen, and dollar sign
+
+  - it: rejects a malformed internal database user
+    set:
+      mariadb.username: user@host
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.username may contain only letters, digits, underscore, hyphen, and dollar sign
+
+  - it: rejects a malformed external database name
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.database: bad/database
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.database may contain only letters, digits, underscore, hyphen, and dollar sign
+
+  - it: rejects a malformed external database user
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.username: user@host
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.username may contain only letters, digits, underscore, hyphen, and dollar sign
+
+  - it: rejects an external database host with path characters
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com/path
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.host may contain only letters, digits, dot, colon, hyphen, and underscore
+
+  - it: rejects a string external database port
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.port: "3306"
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.port must be a whole number >= 1
+
+  - it: rejects an out-of-range external database port
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.port: 65536
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.port must be <= 65535
+
+  - it: rejects charset query parameter injection
+    set:
+      externalDatabase.charset: utf8mb4&ssl_verify_identity=false
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.charset may contain only letters, digits, and underscore
+
+  - it: rejects a non-boolean external database SSL value
+    set:
+      externalDatabase.ssl: "false"
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.ssl must be a boolean
+
+  - it: rejects a malformed collation
+    set:
+      externalDatabase.collation: utf8mb4-unicode-ci
+    asserts:
+      - failedTemplate:
+          errorMessage: externalDatabase.collation may contain only letters, digits, and underscore
+
+  - it: rejects internal root credentials in external mode
+    set:
+      mariadb.enabled: false
+      externalDatabase.host: db.example.com
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.rootCredentials must be empty when mariadb.enabled=false
+
+  - it: rejects scheduled backups in external mode
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      mariadb.backup.enabled: true
+      externalDatabase.host: db.example.com
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.backup.enabled cannot be true when mariadb.enabled=false
+
+  - it: rejects zero pre-migrate retention
+    set:
+      migrations.preMigrateDumpKeep: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: migrations.preMigrateDumpKeep must be >= 1
+
+  - it: rejects quoted pre-migrate retention
+    set:
+      migrations.preMigrateDumpKeep: "8"
+    asserts:
+      - failedTemplate:
+          errorMessage: migrations.preMigrateDumpKeep must be a whole number >= 1
+
+  - it: rejects fractional scheduled-backup retention
+    set:
+      mariadb.backup.retentionDays: 1.5
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.backup.retentionDays must be a whole number >= 1
+
+  - it: rejects zero scheduled-backup retention
+    set:
+      mariadb.backup.retentionDays: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.backup.retentionDays must be >= 1
+
+  - it: rejects an empty enabled backup schedule
+    set:
+      mariadb.backup.enabled: true
+      mariadb.backup.schedule: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.backup.schedule must be non-empty when scheduled backups are enabled
+
+  - it: rejects a non-string backup schedule actionably
+    set:
+      mariadb.backup.enabled: true
+      mariadb.backup.schedule: 123
+    asserts:
+      - failedTemplate:
+          errorMessage: mariadb.backup.schedule must be a string
+
+  - it: rejects an invalid INDI server mode
+    set:
+      indiserver.mode: remote
+    asserts:
+      - failedTemplate:
+          errorMessage: "indiserver.mode must be one of: sidecar, external"
+
+  - it: rejects an external INDI server without a host
+    set:
+      indiserver.mode: external
+    asserts:
+      - failedTemplate:
+          errorMessage: indiserver.external.host must be set and non-empty
+
+  - it: rejects an invalid external INDI server port
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: 70000
+    asserts:
+      - failedTemplate:
+          errorMessage: indiserver.external.port must be <= 65535
+
+  - it: rejects an invalid device access mode
+    set:
+      edge.devices.mode: privileged
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.mode must be one of: hostpath, device-plugin, none"
+
+  - it: rejects a non-boolean dark capture switch
+    set:
+      edge.darks.enabled: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: edge.darks.enabled must be a boolean
+
+  - it: rejects a non-boolean dark daytime switch
+    set:
+      edge.darks.daytime: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: edge.darks.daytime must be a boolean
+
+  - it: rejects a non-boolean pre-migrate dump switch
+    set:
+      migrations.preMigrateDump: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: migrations.preMigrateDump must be a boolean
+
+  - it: rejects zero dark bit depth
+    set:
+      edge.darks.bitmax: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: edge.darks.bitmax must be >= 1
+
+  - it: rejects a quoted dark bit depth
+    set:
+      edge.darks.bitmax: "16"
+    asserts:
+      - failedTemplate:
+          errorMessage: edge.darks.bitmax must be a whole number >= 1
+
+  - it: rejects an invalid dark capture mode
+    set:
+      edge.darks.mode: median
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.darks.mode must be one of: flush, average, tempaverage, sigmaclip, tempsigmaclip"
+
+  - it: rejects a relative capture temp directory
+    set:
+      edge.captureTmpDir: relative/path
+    asserts:
+      - failedTemplate:
+          errorMessage: edge.captureTmpDir must be an absolute path when set
+
+  - it: rejects FILETRANSFER password material in appConfig
+    set: {appConfig.FILETRANSFER.PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.FILETRANSFER.PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects S3 secret material in appConfig
+    set: {appConfig.S3UPLOAD.SECRET_KEY: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.S3UPLOAD.SECRET_KEY is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects MQTT password material in appConfig
+    set: {appConfig.MQTTPUBLISH.PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.MQTTPUBLISH.PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects Sync API credentials in appConfig
+    set: {appConfig.SYNCAPI.APIKEY: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.SYNCAPI.APIKEY is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects pycurl camera password material in appConfig
+    set: {appConfig.PYCURL_CAMERA.PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.PYCURL_CAMERA.PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects OpenWeatherMap credentials in appConfig
+    set: {appConfig.TEMP_SENSOR.OPENWEATHERMAP_APIKEY: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.TEMP_SENSOR.OPENWEATHERMAP_APIKEY is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects Weather Underground credentials in appConfig
+    set: {appConfig.TEMP_SENSOR.WUNDERGROUND_APIKEY: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.TEMP_SENSOR.WUNDERGROUND_APIKEY is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects Astrospheric credentials in appConfig
+    set: {appConfig.TEMP_SENSOR.ASTROSPHERIC_APIKEY: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.TEMP_SENSOR.ASTROSPHERIC_APIKEY is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects temperature sensor MQTT credentials in appConfig
+    set: {appConfig.TEMP_SENSOR.MQTT_PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.TEMP_SENSOR.MQTT_PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects device MQTT credentials in appConfig
+    set: {appConfig.DEVICE.MQTT_PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.DEVICE.MQTT_PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects libcamera MQTT credentials in appConfig
+    set: {appConfig.LIBCAMERA.MQTT_PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.LIBCAMERA.MQTT_PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects ADS-B password material in appConfig
+    set: {appConfig.ADSB.PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.ADSB.PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects image overlay password material in appConfig
+    set: {appConfig.IMAGE_OVERLAY.A_PASSWORD: forbidden}
+    asserts:
+      - failedTemplate: {errorMessage: "appConfig.IMAGE_OVERLAY.A_PASSWORD is credential-bearing and cannot be stored in a ConfigMap; configure it through the upstream UI after install"}
+
+  - it: rejects a root existing Secret with the wrong type
+    set:
+      mariadb.rootCredentials.existingSecret: 123
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.rootCredentials.existingSecret must be a string}
+
+  - it: rejects an invalid root existing Secret name
+    set:
+      mariadb.rootCredentials.existingSecret: Invalid_Name
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.rootCredentials.existingSecret must be a valid DNS subdomain Secret name}
+
+  - it: rejects a non-string OIDC admin group entry
+    set:
+      oidc.adminGroups: [123]
+    asserts:
+      - failedTemplate: {errorMessage: "oidc.adminGroups[0] must be a non-empty string"}
+
+  - it: rejects a non-string admin network entry
+    set:
+      web.adminNetworks: [123]
+    asserts:
+      - failedTemplate: {errorMessage: "web.adminNetworks[0] must be a non-empty string"}
+
+  - it: rejects a non-string OIDC provider name
+    set:
+      oidc.providerName: 123
+    asserts:
+      - failedTemplate: {errorMessage: oidc.providerName must be a string}
+
+  - it: rejects a non-string OIDC username claim
+    set:
+      oidc.usernameClaim: 123
+    asserts:
+      - failedTemplate: {errorMessage: oidc.usernameClaim must be a string}
+
+  - it: rejects whitespace in an admin username
+    set:
+      adminUser.username: bad admin
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - failedTemplate: {errorMessage: adminUser.username must not contain whitespace}
+
+  - it: rejects a non-boolean scheduled backup switch
+    set:
+      mariadb.backup.enabled: "true"
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.backup.enabled must be a boolean}
+
+  - it: rejects a non-boolean auth-all-views switch
+    set:
+      web.authAllViews: "false"
+    asserts:
+      - failedTemplate: {errorMessage: web.authAllViews must be a boolean}
+
+  - it: rejects a non-boolean secure-cookie switch
+    set:
+      web.sessionCookieSecure: "true"
+    asserts:
+      - failedTemplate: {errorMessage: web.sessionCookieSecure must be a boolean}
+
+  - it: rejects a non-boolean OIDC enabled switch
+    set:
+      oidc.enabled: "true"
+    asserts:
+      - failedTemplate: {errorMessage: oidc.enabled must be a boolean}
+
+  - it: rejects a non-boolean OIDC auto-login switch
+    set:
+      oidc.autoLogin: "false"
+    asserts:
+      - failedTemplate: {errorMessage: oidc.autoLogin must be a boolean}
+
+  - it: rejects a non-boolean local-auth switch
+    set:
+      oidc.localAuth: "true"
+    asserts:
+      - failedTemplate: {errorMessage: oidc.localAuth must be a boolean}
+
+  - it: rejects an empty external database name
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.database: ""
+    asserts:
+      - failedTemplate: {errorMessage: externalDatabase.database must be set and non-empty}
+
+  - it: rejects an empty external database host
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: ""
+    asserts:
+      - failedTemplate: {errorMessage: externalDatabase.host must be set and non-empty}
+
+  - it: rejects an empty external database user
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+      externalDatabase.username: ""
+    asserts:
+      - failedTemplate: {errorMessage: externalDatabase.username must be set and non-empty}
+
+  - it: rejects a string external INDI server port
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: "7624"
+    asserts:
+      - failedTemplate: {errorMessage: indiserver.external.port must be a whole number >= 1}
+
+  - it: rejects a non-string capture temp directory
+    set:
+      edge.captureTmpDir: 123
+    asserts:
+      - failedTemplate: {errorMessage: edge.captureTmpDir must be a string}
+
+  - it: rejects a non-string timezone
+    set:
+      timezone: 123
+    asserts:
+      - failedTemplate: {errorMessage: timezone must be a string}
+
+  - it: rejects an empty timezone
+    set:
+      timezone: ""
+    asserts:
+      - failedTemplate: {errorMessage: timezone must be set and non-empty}
+
+  - it: rejects an invalid image pull policy
+    set:
+      image.pullPolicy: Sometimes
+    asserts:
+      - failedTemplate: {errorMessage: "image.pullPolicy must be one of: Always, IfNotPresent, Never"}
+
+  - it: rejects a non-string image pull policy
+    set:
+      image.pullPolicy: true
+    asserts:
+      - failedTemplate: {errorMessage: image.pullPolicy must be a string}
+
+  - it: rejects an invalid storage retention policy
+    set:
+      storage.retentionPolicy: Archive
+    asserts:
+      - failedTemplate: {errorMessage: "storage.retentionPolicy must be one of: Retain, Delete"}
+
+  - it: rejects a non-string storage retention policy
+    set:
+      storage.retentionPolicy: true
+    asserts:
+      - failedTemplate: {errorMessage: storage.retentionPolicy must be a string}
+
+  - it: rejects a non-string shared PVC size
+    set:
+      storage.data.size: 100
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.size must be a string}
+
+  - it: rejects an empty shared PVC size
+    set:
+      storage.data.size: ""
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.size must be set and non-empty}
+
+  - it: rejects a non-string MariaDB PVC size
+    set:
+      mariadb.persistence.size: 8
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.size must be a string}
+
+  - it: rejects an empty MariaDB PVC size
+    set:
+      mariadb.persistence.size: ""
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.size must be set and non-empty}
+
+  - it: rejects a non-string shared PVC storage class
+    set:
+      storage.data.storageClassName: true
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a string}
+
+  - it: rejects an invalid shared PVC storage class
+    set:
+      storage.data.storageClassName: storage.-invalid
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects multiline shared PVC storage-class injection
+    set:
+      storage.data.storageClassName: |-
+        storage.example
+        ---
+        apiVersion: v1
+        kind: Secret
+    asserts:
+      - failedTemplate: {errorMessage: storage.data.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects a non-string MariaDB PVC storage class
+    set:
+      mariadb.persistence.storageClassName: false
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a string}
+
+  - it: rejects an invalid MariaDB PVC storage class
+    set:
+      mariadb.persistence.storageClassName: storage.-invalid
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects multiline MariaDB PVC storage-class injection
+    set:
+      mariadb.persistence.storageClassName: |-
+        storage.example
+        injected: true
+    asserts:
+      - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a valid DNS subdomain StorageClass name}

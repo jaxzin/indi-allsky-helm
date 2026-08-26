@@ -1,0 +1,14 @@
+# CI-only external-database mode. Helm cannot inspect existing Secret contents;
+# this fixture verifies the opaque reference path without carrying credentials.
+credentials:
+  existingSecret: ci-existing-app-secret
+mariadb:
+  enabled: false
+externalDatabase:
+  host: db.example.com
+  port: 3306
+  database: indi_allsky
+  username: indi_allsky
+  ssl: false
+  charset: utf8mb4
+  collation: utf8mb4_unicode_ci

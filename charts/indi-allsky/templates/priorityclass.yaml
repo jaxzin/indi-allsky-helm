@@ -2,7 +2,7 @@
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ include "indi-allsky.fullname" . }}-capture
+  name: {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "capture" "maxLength" 63) }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 {{- /* `| int` guards against Go templates rendering large numbers as 1e+06 */}}
 value: {{ .Values.edge.priorityClass.value | int }}

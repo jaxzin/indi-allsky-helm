@@ -1,0 +1,171 @@
+suite: collision-safe suffix-preserving resource names
+values:
+  - a5-values.yaml
+set:
+  mariadb.backup.enabled: true
+templates:
+  - configmap-env.yaml
+  - configmap-overlay.yaml
+  - secret-env.yaml
+  - secret-mariadb-root.yaml
+  - mariadb-service.yaml
+  - mariadb-statefulset.yaml
+  - mariadb-backup-cronjob.yaml
+  - pvc-data.yaml
+  - pvc-mariadb.yaml
+  - priorityclass.yaml
+tests:
+  - it: prefixes a digit-leading Service name with a collision-resistant hash
+    template: mariadb-service.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: svc-1foo-indi-allsky-2783982a-mariadb}
+      - matchRegex: {path: metadata.name, pattern: '^[a-z]([-a-z0-9]*[a-z0-9])?$'}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+
+  - it: keeps a naturally prefixed release distinct from a digit-leading release
+    template: mariadb-service.yaml
+    release:
+      name: svc-1foo
+    asserts:
+      - equal: {path: metadata.name, value: svc-1foo-indi-allsky-mariadb}
+      - notEqual: {path: metadata.name, value: svc-1foo-indi-allsky-2783982a-mariadb}
+
+  - it: keeps StatefulSet metadata unchanged while referencing the normalized Service
+    template: mariadb-statefulset.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: 1foo-indi-allsky-mariadb}
+      - equal: {path: spec.serviceName, value: svc-1foo-indi-allsky-2783982a-mariadb}
+
+  - it: uses the digit-leading Service normalization as the application database host
+    template: configmap-env.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: data.INDIALLSKY_MARIADB_HOST, value: svc-1foo-indi-allsky-2783982a-mariadb}
+
+  - it: preserves the MariaDB suffix and hash for a maximum-length digit-leading release
+    template: mariadb-service.yaml
+    release:
+      name: 1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: svc-1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-6d4135cb-mariadb}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '^svc-.*-[0-9a-f]{8}-mariadb$'}
+
+  - it: leaves a digit-leading generated application Secret unchanged
+    template: secret-env.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: 1foo-indi-allsky-env}
+
+  - it: leaves a digit-leading generated data PVC unchanged
+    template: pvc-data.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: 1foo-indi-allsky-data}
+
+  - it: leaves a digit-leading generated MariaDB PVC unchanged
+    template: pvc-mariadb.yaml
+    release:
+      name: 1foo
+    asserts:
+      - equal: {path: metadata.name, value: 1foo-indi-allsky-mariadb-data}
+      - notEqual: {path: metadata.name, value: svc-1foo-indi-allsky-mariadb-data}
+
+  - it: normalizes a dotted release with a collision-resistant hash
+    template: mariadb-service.yaml
+    release:
+      name: foo.bar
+    asserts:
+      - equal: {path: metadata.name, value: foo-bar-indi-allsky-b4c7c8cc-mariadb}
+      - matchRegex: {path: metadata.name, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+
+  - it: keeps a dashed release distinct from its dotted counterpart
+    template: mariadb-service.yaml
+    release:
+      name: foo-bar
+    asserts:
+      - equal: {path: metadata.name, value: foo-bar-indi-allsky-mariadb}
+      - notEqual: {path: metadata.name, value: foo-bar-indi-allsky-b4c7c8cc-mariadb}
+
+  - it: uses the exact normalized Service name in the StatefulSet reference
+    template: mariadb-statefulset.yaml
+    release:
+      name: foo.bar
+    asserts:
+      - equal: {path: metadata.name, value: foo-bar-indi-allsky-b4c7c8cc-mariadb}
+      - equal: {path: spec.serviceName, value: foo-bar-indi-allsky-b4c7c8cc-mariadb}
+
+  - it: preserves the MariaDB suffix and hash at the maximum Helm release length
+    template: mariadb-service.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ad2ef50a-mariadb}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-mariadb$'}
+
+  - it: preserves the CronJob suffix within the controller-safe 52-character limit
+    template: mariadb-backup-cronjob.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-c30af672-db-backup}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,52}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-db-backup$'}
+
+  - it: preserves the generated application Secret and ConfigMap suffix
+    template: secret-env.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-c35c2c86-env}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+
+  - it: preserves the root Secret suffix independently
+    template: secret-mariadb-root.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-71bf2ca0-mariadb-root}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-mariadb-root$'}
+
+  - it: preserves the overlay ConfigMap suffix independently
+    template: configmap-overlay.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-d2620802-config-overlay}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-config-overlay$'}
+
+  - it: keeps the data PVC producer aligned with the suffix-aware helper
+    template: pvc-data.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-3dcc3906-data}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-data$'}
+
+  - it: preserves the standalone MariaDB PVC suffix and hash at maximum length
+    template: pvc-mariadb.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-807a77f2-mariadb-data}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-mariadb-data$'}
+
+  - it: keeps the PriorityClass producer within the same naming contract
+    template: priorityclass.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - equal: {path: metadata.name, value: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-4aaffa60-capture}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-capture$'}

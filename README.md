@@ -46,7 +46,13 @@ docker image inspect ghcr.io/jaxzin/indi-allsky-indiserver:main \
 
 The full interface — paths, the environment-variable contract, the chart's
 hard requirements, migration behaviour and config-overlay semantics — is in
-[docs/container-contract.md](docs/container-contract.md).
+[docs/container-contract.md](docs/container-contract.md). Chart values and
+database/credential mode examples are in
+[docs/configuration.md](docs/configuration.md).
+Before production use, read its credential-lifecycle, storage-lifecycle,
+backup-protection, and restore sections: changing a Kubernetes Secret does not
+rotate an initialized MariaDB account, retained PVCs are a coherent recovery
+set, and compressed SQL dumps are not encrypted recovery sets by themselves.
 
 ## Upstream pin model
 

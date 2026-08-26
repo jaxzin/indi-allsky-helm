@@ -1,0 +1,133 @@
+suite: hardened MariaDB StatefulSet
+values:
+  - a5-values.yaml
+templates:
+  - mariadb-statefulset.yaml
+release:
+  name: test-release
+tests:
+  - it: binds one replica to the matching headless Service and standalone database claim
+    asserts:
+      - equal:
+          path: metadata.name
+          value: test-release-indi-allsky-mariadb
+      - equal:
+          path: spec.serviceName
+          value: test-release-indi-allsky-mariadb
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: 'spec.selector.matchLabels["app.kubernetes.io/component"]'
+          value: mariadb
+      - equal:
+          path: 'spec.template.metadata.labels["app.kubernetes.io/component"]'
+          value: mariadb
+      - notExists: {path: spec.persistentVolumeClaimRetentionPolicy}
+      - notExists: {path: spec.volumeClaimTemplates}
+      - equal: {path: "spec.template.spec.volumes[2].name", value: database}
+      - equal:
+          path: spec.template.spec.volumes[2].persistentVolumeClaim.claimName
+          value: test-release-indi-allsky-mariadb-data
+
+  - it: applies complete pod and container hardening with a bounded shutdown
+    asserts:
+      - equal: {path: spec.template.spec.automountServiceAccountToken, value: false}
+      - equal: {path: spec.template.spec.terminationGracePeriodSeconds, value: 60}
+      - equal: {path: spec.template.spec.securityContext.runAsNonRoot, value: true}
+      - equal: {path: spec.template.spec.securityContext.runAsUser, value: 999}
+      - equal: {path: spec.template.spec.securityContext.runAsGroup, value: 999}
+      - equal: {path: spec.template.spec.securityContext.fsGroup, value: 999}
+      - equal: {path: spec.template.spec.securityContext.fsGroupChangePolicy, value: OnRootMismatch}
+      - equal: {path: spec.template.spec.securityContext.seccompProfile.type, value: RuntimeDefault}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.runAsNonRoot", value: true}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.runAsUser", value: 999}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.runAsGroup", value: 999}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation", value: false}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.capabilities.drop[0]", value: ALL}
+      - equal: {path: "spec.template.spec.containers[0].securityContext.seccompProfile.type", value: RuntimeDefault}
+
+  - it: uses utf8mb4 and separate file-backed application and root credentials
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --character-set-server=utf8mb4
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --collation-server=utf8mb4_unicode_ci
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: MARIADB_PASSWORD_FILE, value: /run/secrets/app/MARIADB_PASSWORD}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: MARIADB_ROOT_PASSWORD_FILE, value: /run/secrets/root/MARIADB_ROOT_PASSWORD}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: MARIADB_ROOT_HOST, value: localhost}
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: MARIADB_RANDOM_ROOT_PASSWORD}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: MARIADB_ROOT_PASSWORD}
+          any: true
+      - equal: {path: "spec.template.spec.volumes[0].secret.secretName", value: test-release-indi-allsky-env}
+      - equal: {path: "spec.template.spec.volumes[0].secret.defaultMode", value: 288}
+      - equal: {path: "spec.template.spec.volumes[0].secret.items[0].key", value: MARIADB_PASSWORD}
+      - equal: {path: "spec.template.spec.volumes[0].secret.items[0].path", value: MARIADB_PASSWORD}
+      - equal: {path: "spec.template.spec.volumes[1].secret.secretName", value: test-release-indi-allsky-mariadb-root}
+      - equal: {path: "spec.template.spec.volumes[1].secret.defaultMode", value: 288}
+      - equal: {path: "spec.template.spec.volumes[1].secret.items[0].key", value: MARIADB_ROOT_PASSWORD}
+      - equal: {path: "spec.template.spec.volumes[1].secret.items[0].path", value: MARIADB_ROOT_PASSWORD}
+
+  - it: renders startup readiness and liveness probes with explicit budgets
+    asserts:
+      - equal: {path: "spec.template.spec.containers[0].startupProbe.exec.command", value: [healthcheck.sh, --connect, --innodb_initialized]}
+      - equal: {path: "spec.template.spec.containers[0].startupProbe.periodSeconds", value: 5}
+      - equal: {path: "spec.template.spec.containers[0].startupProbe.failureThreshold", value: 60}
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.exec.command", value: [healthcheck.sh, --connect, --innodb_initialized]}
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.periodSeconds", value: 5}
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.failureThreshold", value: 6}
+      - equal: {path: "spec.template.spec.containers[0].livenessProbe.exec.command", value: [healthcheck.sh, --connect, --innodb_initialized]}
+      - equal: {path: "spec.template.spec.containers[0].livenessProbe.periodSeconds", value: 10}
+      - equal: {path: "spec.template.spec.containers[0].livenessProbe.failureThreshold", value: 6}
+
+  - it: resolves both existing Secret names without rendering secret values
+    set:
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+      mariadb.rootCredentials.existingSecret: existing-root-secret
+      mariadb.rootCredentials.password: ""
+    asserts:
+      - equal: {path: "spec.template.spec.volumes[0].secret.secretName", value: existing-app-secret}
+      - equal: {path: "spec.template.spec.volumes[1].secret.secretName", value: existing-root-secret}
+
+  - it: renders chart-wide image pull secrets and custom scheduling resources
+    set:
+      image.pullSecrets:
+        - name: registry-auth
+      mariadb.nodeSelector:
+        kubernetes.io/arch: amd64
+      mariadb.resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+    asserts:
+      - equal: {path: "spec.template.spec.imagePullSecrets[0].name", value: registry-auth}
+      - equal: {path: 'spec.template.spec.nodeSelector["kubernetes.io/arch"]', value: amd64}
+      - equal: {path: "spec.template.spec.containers[0].resources.requests.cpu", value: 100m}
+      - equal: {path: "spec.template.spec.containers[0].resources.limits.memory", value: 512Mi}
+
+  - it: omits image pull secrets when none are configured
+    asserts:
+      - notExists: {path: spec.template.spec.imagePullSecrets}
+
+  - it: is omitted in external database mode
+    set:
+      mariadb.enabled: false
+      mariadb.rootCredentials.password: ""
+      externalDatabase.host: db.example.com
+    asserts:
+      - hasDocuments: {count: 0}

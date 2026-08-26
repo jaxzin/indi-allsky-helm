@@ -1,0 +1,126 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.mariadb.enabled -}}
+{{- $mariadbUid := include "indi-allsky.mariadbUid" . | int -}}
+{{- $terminationGracePeriodSeconds := 60 -}}
+{{- $startupPeriodSeconds := 5 -}}
+{{- $startupFailureThreshold := 60 -}}
+{{- $readinessPeriodSeconds := 5 -}}
+{{- $readinessFailureThreshold := 6 -}}
+{{- $livenessPeriodSeconds := 10 -}}
+{{- $livenessFailureThreshold := 6 -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "indi-allsky.mariadbName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "indi-allsky.mariadbServiceName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $mariadbUid }}
+        runAsGroup: {{ $mariadbUid }}
+        fsGroup: {{ $mariadbUid }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mariadb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mariadb
+          image: {{ .Values.mariadb.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ $mariadbUid }}
+            runAsGroup: {{ $mariadbUid }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+            - name: MARIADB_DATABASE
+              value: {{ .Values.mariadb.database | quote }}
+            - name: MARIADB_USER
+              value: {{ .Values.mariadb.username | quote }}
+            - name: MARIADB_PASSWORD_FILE
+              value: /run/secrets/app/MARIADB_PASSWORD
+            - name: MARIADB_ROOT_PASSWORD_FILE
+              value: /run/secrets/root/MARIADB_ROOT_PASSWORD
+            - name: MARIADB_ROOT_HOST
+              value: localhost
+          ports:
+            - name: mysql
+              containerPort: {{ include "indi-allsky.mariadbPort" . }}
+              protocol: TCP
+          startupProbe:
+            exec:
+              command: [healthcheck.sh, --connect, --innodb_initialized]
+            periodSeconds: {{ $startupPeriodSeconds }}
+            failureThreshold: {{ $startupFailureThreshold }}
+          readinessProbe:
+            exec:
+              command: [healthcheck.sh, --connect, --innodb_initialized]
+            periodSeconds: {{ $readinessPeriodSeconds }}
+            failureThreshold: {{ $readinessFailureThreshold }}
+          livenessProbe:
+            exec:
+              command: [healthcheck.sh, --connect, --innodb_initialized]
+            periodSeconds: {{ $livenessPeriodSeconds }}
+            failureThreshold: {{ $livenessFailureThreshold }}
+          {{- with .Values.mariadb.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: database
+              mountPath: /var/lib/mysql
+            - name: app-credentials
+              mountPath: /run/secrets/app
+              readOnly: true
+            - name: root-credentials
+              mountPath: /run/secrets/root
+              readOnly: true
+      volumes:
+        - name: app-credentials
+          secret:
+            secretName: {{ include "indi-allsky.envSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: MARIADB_PASSWORD
+                path: MARIADB_PASSWORD
+        - name: root-credentials
+          secret:
+            secretName: {{ include "indi-allsky.mariadbRootSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: MARIADB_ROOT_PASSWORD
+                path: MARIADB_ROOT_PASSWORD
+        - name: database
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.mariadbDataPvcName" . }}
+{{- end }}

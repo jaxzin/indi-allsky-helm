@@ -1,0 +1,13 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- $canonical := include "indi-allsky.overlayCanonicalJson" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "indi-allsky.overlayConfigMapName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+  annotations:
+    indi-allsky.io/overlay-checksum: {{ include "indi-allsky.overlayChecksum" . | quote }}
+data:
+  config-overlay.json: |
+    {{- $canonical | fromJson | toPrettyJson | nindent 4 }}

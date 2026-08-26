@@ -30,6 +30,9 @@ edge:
       memory: 1Gi
   tolerations: []
   podAnnotations: {}       # e.g. Reloader annotations so credential rotation rolls the pod
+  # Optional absolute path for capture scratch files. Leave empty to use the
+  # image default; a later edge workload mounts an emptyDir here when set.
+  captureTmpDir: ""
   # gids granted in hostpath devices mode for /dev access (dialout, gpio, i2c on
   # Raspberry Pi OS/Debian defaults) — adjust to your node OS's group ids
   supplementalGroups: [20, 997, 998]
@@ -53,6 +56,9 @@ edge:
       resources: {}
   darks:
     enabled: false         # runs darks.py instead of capture (maintenance mode)
+    daytime: true          # true passes --daytime; false passes --no-daytime
+    bitmax: 16
+    mode: average          # flush | average | tempaverage | sigmaclip | tempsigmaclip
 
 indiserver:
   mode: sidecar            # sidecar | external
@@ -80,6 +86,12 @@ web:
     image: nginx:1.29-alpine
   resources: {}
   authAllViews: false
+  # Keep both session and remember-me cookies HTTPS-only. Set false only for a
+  # deliberately plain-HTTP deployment, where secure cookies cannot be returned.
+  sessionCookieSecure: true
+  # JSON-serialized into INDIALLSKY_ADMIN_NETWORKS. Empty deliberately removes
+  # upstream's blanket RFC1918 trust; see docs/configuration.md.
+  adminNetworks: []
   service:
     port: 8080
   ingress:
@@ -99,6 +111,9 @@ migrations:
   # 2026-08-20). Disable ONLY for external databases with least-privilege users
   # and DBA-managed backups — you are then accepting unguarded autogenerate DDL.
   preMigrateDump: true
+  # Number of verified pre-migration dumps retained by migrate.sh. Must remain
+  # at least 1; zero would delete the safety dump immediately before mutation.
+  preMigrateDumpKeep: 8
 
 oidc:
   enabled: false
@@ -136,11 +151,17 @@ credentials:
   adminPassword: ""
 
 storage:
+  # Retain protects the shared application recovery set and internal database
+  # PVCs across uninstall. Switch to Delete in a deliberate upgrade before an
+  # automated uninstall when those PVCs should be removed.
+  retentionPolicy: Retain
   data:
     # RWX required whenever edge and web can land on different nodes
     existingClaim: ""
+    # Empty selects the cluster default; a non-empty value must be a DNS subdomain.
     storageClassName: ""
     accessModes: [ReadWriteMany]
+    # Kubernetes quantity, kept as a non-empty string and quoted in the manifest.
     size: 100Gi
 
 mariadb:
@@ -150,8 +171,15 @@ mariadb:
   username: indi_allsky
   nodeSelector: {}
   resources: {}
+  # Separate recoverable root credential. This Secret is mounted only into the
+  # MariaDB container and never reaches application or backup workloads.
+  rootCredentials:
+    existingSecret: ""
+    password: ""            # development only; prefer existingSecret
   persistence:
+    # Empty selects the cluster default; a non-empty value must be a DNS subdomain.
     storageClassName: ""
+    # Kubernetes quantity, kept as a non-empty string and quoted in the manifest.
     size: 8Gi
   backup:
     enabled: false
@@ -163,6 +191,9 @@ externalDatabase:
   port: 3306
   database: indi_allsky
   username: indi_allsky
+  ssl: false
+  charset: utf8mb4
+  collation: utf8mb4_unicode_ci
 
 mosquitto:
   enabled: false

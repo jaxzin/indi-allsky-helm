@@ -1,0 +1,19 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.mariadb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "indi-allsky.mariadbServiceName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: mysql
+      port: {{ include "indi-allsky.mariadbPort" . }}
+      targetPort: mysql
+      protocol: TCP
+  selector:
+    {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 4 }}
+{{- end }}
