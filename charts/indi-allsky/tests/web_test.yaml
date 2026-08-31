@@ -67,6 +67,24 @@ tests:
       - equal: {path: "spec.template.spec.containers[1].name", value: nginx}
       - lengthEqual: {path: spec.template.spec.containers, count: 2}
 
+  # `cp -a` here is a CrashLoopBackOff, not a style preference. Copying
+  # <source>/. onto an existing destination makes cp apply the source
+  # directory's attributes to the destination too, and the destination is a
+  # kubelet-created emptyDir mount point owned by root — utimensat fails EPERM
+  # for uid 10001 and the initContainer never completes. Caught by the kind e2e
+  # (#8); pinned here so it cannot come back without a local failure.
+  - it: copies the static assets without trying to preserve attributes
+    template: web-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="static-copy")].command'
+          value:
+            - cp
+            - "-R"
+            - "--"
+            - /home/allsky/indi-allsky/indi_allsky/flask/static/.
+            - /usr/share/nginx/indi-allsky-static/
+
   - it: hardens the pod and every container as uid 10001
     template: web-deployment.yaml
     asserts:

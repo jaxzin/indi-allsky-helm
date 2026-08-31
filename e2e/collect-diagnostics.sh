@@ -16,10 +16,46 @@ set -uo pipefail
 
 LOG_TAIL_LINES=300
 EVENT_LIMIT=80
+# The focused pass at the top prints only the tail of a failing container's
+# output. The full dump below can run to thousands of lines and is easy to lose
+# to log truncation; the first thing anyone needs is which container died and
+# what it said last.
+FAILURE_TAIL_LINES=40
 
 heading() {
     printf '\n===== %s =====\n' "$1"
 }
+
+# Which containers are not running, and what did each say last? Printed BEFORE
+# the exhaustive dump so the answer is at the top of the step rather than
+# buried after several hundred lines of a healthy container's log.
+heading "containers that are not ready"
+kubectl get pods --all-namespaces --output json 2>/dev/null \
+    | jq -r '
+        .items[]
+        | . as $pod
+        | (($pod.status.initContainerStatuses // []) + ($pod.status.containerStatuses // []))[]
+        | select(.ready != true)
+        | "\($pod.metadata.namespace)/\($pod.metadata.name)/\(.name)"
+        + "\trestarts=\(.restartCount)"
+        + "\twaiting=\(.state.waiting.reason // "-")"
+        + "\tlastExit=\(.lastState.terminated.exitCode // .state.terminated.exitCode // "-")"
+        + "\tlastReason=\(.lastState.terminated.reason // .state.terminated.reason // "-")"' \
+    | tee /tmp/e2e-not-ready.txt \
+    || true
+
+while IFS=$'\t' read -r locator _; do
+    [ -n "$locator" ] || continue
+    namespace="${locator%%/*}"
+    remainder="${locator#*/}"
+    pod="${remainder%%/*}"
+    container="${remainder##*/}"
+    heading "last ${FAILURE_TAIL_LINES} lines: ${locator}"
+    kubectl --namespace "$namespace" logs "$pod" --container "$container" \
+        --tail "$FAILURE_TAIL_LINES" 2>&1 || true
+    kubectl --namespace "$namespace" logs "$pod" --container "$container" \
+        --previous --tail "$FAILURE_TAIL_LINES" 2>/dev/null || true
+done </tmp/e2e-not-ready.txt
 
 heading "nodes"
 kubectl get nodes --output wide || true
