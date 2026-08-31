@@ -1,7 +1,48 @@
 # Topologies
 
-Where the pieces run, and the choices that decide it. This is a seed — the
-fuller discovery and deployment guidance lands with the documentation task.
+Where the pieces run, and the choices that decide it.
+
+## v1: capture is pinned, everything else floats
+
+One shape ships today. The edge pod is pinned to the node the hardware is
+plugged into; the web UI, the database and the optional broker are ordinary
+cluster workloads that land wherever the scheduler puts them.
+
+```
+  camera node (indi-allsky.io/camera)          anywhere in the cluster
+  ┌──────────────────────────────────┐     ┌──────────────────────────────┐
+  │ edge pod                         │     │ web pod                      │
+  │   indiserver ──▶ /dev/bus/usb    │     │   gunicorn ◀── nginx :8080   │
+  │        ▲                         │     └───────┬──────────▲───────────┘
+  │        │ :7624 (pod loopback)    │             │          │
+  │   daemon ──▶ /dev/i2c, gpiochip  │             │          │
+  └────┬─────────────────┬───────────┘             │          │
+       │                 │                         │          │
+       │ writes          │ :3306                   │ :3306    │ reads
+       ▼                 ▼                         ▼          │
+  ┌──────────────────────────────────────────────────┐        │
+  │ shared data PVC (RWX)                            │────────┘
+  │   /var/www/html/allsky   images, timelapses      │
+  │   /var/www/html/.state   dumps, alembic history  │
+  └──────────────────────────────────────────────────┘
+  ┌──────────────────────────┐   ┌────────────────────────────┐
+  │ mariadb (StatefulSet)    │   │ mosquitto (optional)       │
+  │   or externalDatabase.*  │   │   :1883, edge pod only     │
+  └──────────────────────────┘   └────────────────────────────┘
+```
+
+Two things follow from that picture, and both bite in practice:
+
+- **The data volume defaults to `ReadWriteMany`.** Edge writes it, web reads
+  it, and they are not on the same node. A `ReadWriteOnce` volume forces the
+  web pod onto the camera node — legal, but then it is no longer floating.
+- **Web-to-daemon commands take up to 13 seconds.** Upstream polls the database
+  for them rather than calling the daemon; that is upstream's design, not a
+  chart delay.
+
+Why the edge pod is one pod rather than several is upstream's process model,
+not a packaging choice — see
+[node-contract.md](node-contract.md#v1-constraint-camera-and-sensors-on-the-same-node).
 
 ## Where indiserver runs
 
@@ -146,3 +187,57 @@ client, because there is no authentication.
 
 Setting `networkPolicy.enabled: false` turns off every policy this chart
 renders, not just the broker's.
+
+## Topologies that do not exist yet
+
+These are recorded so nobody spends an evening looking for a value that was
+never built. **None of them is configurable today**, and no `values.yaml` key
+below exists in this release.
+
+### Phase 2 — a floating video worker (`videoWorker.mode: cluster`)
+
+Timelapse, keogram and star-trail generation is the heavy compute in
+indi-allsky, and today it runs inside the edge pod on the camera node, at
+`nice 19` under a Guaranteed QoS budget. On a Raspberry Pi that is the busiest
+the node ever gets, and it happens at night while capture is still running.
+
+VideoWorker is the most separable piece of upstream's daemon: it is driven by
+the database `taskqueue`, and only its wake-up is an in-process queue. Phase 2
+replaces that nudge so the worker can run as its own floating Deployment
+mounting the shared image PVC, selected by `videoWorker.mode: embedded|cluster`
+with `embedded` staying the default.
+
+It needs a small upstream code change, which is why it is not here yet: the
+patch lives in `patches/` as an **upstream PR candidate** rather than a
+permanent fork. Tracked in the roadmap section of
+[the README](../README.md#roadmap).
+
+### Documented ceiling — a full capture split
+
+Thin indiserver on the camera node, the whole daemon floating. This is
+**documented but not built, and not currently buildable** for the general case:
+SensorWorker talks to i2c, 1-wire and GPIO with no network transport, and the
+capture and image workers exchange auto-exposure feedback through
+`multiprocessing.Array` shared memory. A setup with no local sensors — or with
+sensors published over MQTT instead — is the only shape where the split is
+even coherent, and it still needs the shared-memory seam addressed upstream.
+
+### Future — a syncapi "web-only" recipe
+
+Upstream ships a syncapi that replicates images from a capture host to a
+separate web host. That is the shape for an operator with no `ReadWriteMany`
+storage: capture writes locally, the web tier receives over HTTP instead of
+sharing a volume. It is a recipe rather than a chart feature — a second release
+in web-only mode, plus upstream's own syncapi settings — and it has not been
+written or tested yet.
+
+Until it exists, RWX storage is a requirement of this chart whenever the web
+pod and the edge pod can land on different nodes.
+
+### Not planned in v1
+
+Multi-camera support, highly-available MariaDB, and first-class libcamera/CSI
+camera support. The escape hatch for libcamera is `indiserver.mode: external`
+against a host-run indiserver. Focuser control is also a known limitation when
+the web pod is not on the camera node: upstream runs focuser moves inside
+gunicorn.

@@ -1,9 +1,9 @@
 # Chart configuration
 
-The chart is still under construction, but its database, authentication,
-overlay, and backup values are stable enough for the later web and edge
-workloads to consume. `values.yaml` remains the complete reference; this guide
-explains the mode choices and the fail-fast rules around them.
+[`values.yaml`](../charts/indi-allsky/values.yaml) is the complete reference;
+this guide explains the mode choices and the fail-fast rules around them.
+Start at [the README](../README.md) for a quickstart and the values most
+installs need to set.
 
 ## Application credentials
 
@@ -346,8 +346,12 @@ Two details that procedure measured and this document previously did not state:
 grants is a verification step on a surviving server and a repair only on a
 rebuilt one; and the MariaDB root Secret is never mounted by any application or
 backup workload, so every root step above has to be run from inside the database
-container. The final operator-facing write-up is owned by the
-[A10 handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008).
+container. That scenario landed in
+[PR #40](https://github.com/jaxzin/indi-allsky-helm/pull/40) and runs on every
+pull request in the `e2e-database` job; it is the evidence the
+[A10 release handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008)
+required before a first supported release, and the operator-facing summary of
+these contracts is the [README's lifecycle section](../README.md#before-you-run-this-for-real).
 
 ## Serving path and the proxy boundary
 
@@ -370,6 +374,16 @@ dumps and the Alembic tree, and the static assets `static-copy` copied out of
 the web image. Everything else is a 404, dot paths included — 404 rather than
 403, because a 403 confirms the path exists. `/healthz` is nginx's own liveness
 and readiness endpoint and deliberately does not touch gunicorn.
+
+**A consequence worth stating outright: the image archive is unauthenticated.**
+Because nginx serves `/indi-allsky/images` from an `alias` rather than proxying
+it, those requests never reach Flask, and `web.authAllViews: true` does not
+apply to them. Anything that can reach the web Service can read every captured
+image. Everything else is proxied and does go through the application's auth.
+An operator who wants a private archive gates it in front of the chart — an
+authenticating Ingress, an identity-aware proxy, or an Ingress that is simply
+not published. Also in
+[node-contract.md](node-contract.md#limitations-that-are-not-about-node-placement).
 
 `X-Forwarded-Proto` is honoured when an upstream proxy sets `http` or `https`
 and otherwise falls back to this hop's own scheme, so the application builds
