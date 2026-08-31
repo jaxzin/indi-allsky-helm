@@ -461,6 +461,16 @@ rejected in the other two. Values above Kubernetes'
 resource and privilege, and removes the camera node requirement. Independently
 enabled sensors keep working.
 
+**Probe limits.** The sidecar's startup, readiness and liveness probes are TCP
+checks on 7624, because indiserver speaks the INDI protocol rather than HTTP.
+They prove the process is listening, not that the camera is healthy: a driver
+that has stopped responding still holds the listener open. Capture health is
+the daemon's opt-in `edge.freshnessProbe`, which is fail-closed — a missing
+latest image counts as stale — so do not enable it before the first frame
+exists, and set `maxAgeSeconds` comfortably above your longest capture cadence.
+The daemon has no default liveness probe for that reason. None of these
+timings are public values.
+
 `captureTmpDir`, when set, must be absolute. Empty keeps the image default;
 `/tmp` reuses the daemon container's existing scratch emptyDir; any other path
 gets a dedicated emptyDir and is rejected if it would overlap the rendered
