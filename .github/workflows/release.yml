@@ -146,24 +146,49 @@ jobs:
       # `helm registry login` keeps its own credential store, separate from the
       # docker login above, so both are needed. --password-stdin keeps the token
       # out of the process table.
-      - name: Package and push the chart
+      #
+      # The digest check runs on the LOCAL .tgz, before push — deliberately
+      # redundant with the baking step's own assertion above, and with the
+      # post-push check below. Once `helm push` succeeds, a chart later found
+      # to be mis-pinned is already published under that version number with
+      # no way to un-publish or re-push it (the pin gate refuses a reused
+      # tag). Catching a bad package before that point is a hard requirement,
+      # not belt-and-braces; catching it after is what the next step is for,
+      # in case the registry round-trip itself corrupted something this
+      # cannot see.
+      - name: Package, verify locally, then push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.pin.outputs.version }}
+          INDISERVER_DIGEST: ${{ steps.digests.outputs.indiserver }}
+          DAEMON_DIGEST: ${{ steps.digests.outputs.daemon }}
+          WEB_DIGEST: ${{ steps.digests.outputs.web }}
         run: |
           set -euo pipefail
+          helm package charts/indi-allsky --version "$VERSION"
+
+          packaged_values="$(helm show values "indi-allsky-${VERSION}.tgz")"
+          for pair in "indiserver=$INDISERVER_DIGEST" "daemon=$DAEMON_DIGEST" "web=$WEB_DIGEST"; do
+            image="${pair%%=*}"
+            expected="${pair#*=}"
+            actual="$(echo "$packaged_values" | yq -r ".image.digests.${image}")"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::local package indi-allsky-${VERSION}.tgz has image.digests.${image}='${actual}', expected '${expected}' — refusing to push a chart that does not pin what it claims to" >&2
+              exit 1
+            fi
+          done
+          echo "Local package is digest-pinned; pushing"
+
           printf '%s' "$GH_TOKEN" |
             helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          helm package charts/indi-allsky --version "$VERSION"
           helm push "indi-allsky-${VERSION}.tgz" oci://ghcr.io/jaxzin/charts
 
       # Prove the artifact is consumable the way the README tells operators to
       # consume it, rather than trusting that a successful push implies a
-      # working pull — AND prove the digest-baking above actually reached the
-      # published artifact, not just the local package step. A published
-      # chart whose own defaults still point at mutable tags is exactly the
-      # supply-chain gap this release process exists to close, so this is a
-      # release-blocking assertion, not an informational check.
+      # working pull — and that the registry round-trip did not corrupt what
+      # the local check above already proved. This is now a second
+      # independent check on an already-verified property, not the only
+      # thing standing between a bad bake and a published release.
       - name: Verify the published chart is pullable and digest-pinned
         env:
           VERSION: ${{ steps.pin.outputs.version }}
