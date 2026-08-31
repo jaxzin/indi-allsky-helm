@@ -227,9 +227,12 @@ jobs:
       # the body above, so the release carries both the facts we recorded and
       # the change list GitHub derives.
       #
-      # First release only: a freshly created GHCR package is private. The chart
-      # package's visibility has to be set to public once, in the GHCR package
-      # settings, before anonymous `helm install oci://…` works for anyone else.
+      # First release only: a freshly created GHCR package is private, and the
+      # pull verification above passes anyway because it uses the credentials it
+      # pushed with. The chart package's visibility has to be set to public
+      # once, in the GHCR package settings, before anonymous
+      # `helm install oci://…` works for anyone else. GitHub exposes no API for
+      # it, so it cannot live here — issue #45 owns it.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: release-notes.md
