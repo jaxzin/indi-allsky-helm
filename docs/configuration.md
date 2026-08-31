@@ -107,10 +107,26 @@ owns this single-writer contract, and
 [A9 (#8)](https://github.com/jaxzin/indi-allsky-helm/issues/8) owns its
 end-to-end rollout and overlap proof.
 
-This mechanism does **not** serialize the scheduled backup CronJob with
-migration DDL. The CronJob's `Forbid` concurrency policy prevents two scheduled
-backup Jobs from overlapping each other; it does not lock out the web
-migration initContainer.
+There are three serialization layers, and they cover different overlaps:
+
+| Layer | Prevents |
+| --- | --- |
+| One replica + `strategy: Recreate` | two chart-managed migrations |
+| CronJob `concurrencyPolicy: Forbid` | two scheduled backup Jobs |
+| Shared MariaDB advisory lock | a migration and a scheduled backup overlapping, in either start order |
+
+The first two cannot see each other, which is why the third exists: a scheduled
+`mariadb-dump` can otherwise run straight through a migration's `ALTER`.
+`--single-transaction` gives a consistent view of ordinary DML and is not
+coordination for DDL. Both writers now run through
+`db-maintenance-lock.sh`, which holds one database-scoped named lock in a live
+session for the whole critical section — see
+[the container contract](container-contract.md#serializing-migrations-and-scheduled-backups)
+for the lock identity, the bounded timing, and the stable-primary requirement.
+
+**Scaling implication.** The one-replica limit is a v1 property of the
+migration and seeding path, not a performance ceiling anyone chose. The lock is
+a second layer under it, not a licence to raise the replica count.
 
 ### Credential lifecycle and root recovery
 
@@ -174,14 +190,21 @@ Credential-bearing paths are rejected at render time because this data is a
 ConfigMap. Configure those fields through the upstream UI after install until
 an explicit Secret-backed integration exists.
 
-The overlay is projected separately at
-`/etc/indi-allsky-overlay/config-overlay.json`; it is not a `subPath` inside the
-memory-backed `/etc/indi-allsky` volume. The chart hashes the canonical compact
-JSON payload and exposes that exact digest in the environment. The future web
-migration initContainer writes it atomically to
-`/var/www/html/.state/config-overlay.applied` only after successful migration,
-bootstrap, overlay application, and seeding. The future edge workload waits for
-exact content equality before starting capture.
+The overlay is projected on its own volume at `/etc/indi-allsky-overlay`; it is
+not a `subPath` inside the memory-backed `/etc/indi-allsky` volume, because a
+`subPath` mount resolves once at container start and never receives a ConfigMap
+update. The ConfigMap holds two renderings: `config-overlay.canonical.json`,
+the byte-exact compact payload the checksum covers and the only file the
+migration path reads, and `config-overlay.json`, a pretty sibling for humans.
+
+The web pod's migration initContainer reads the projection exactly once into a
+private snapshot, verifies that snapshot against the expected digest, merges
+from the snapshot, and — only after successful migration, bootstrap, overlay
+application and seeding — writes the checksum atomically to
+`/var/www/html/.state/config-overlay.applied`. The edge pod's
+`wait-for-overlay` initContainer requires exact byte equality with that
+sentinel before capture starts, and reports `missing`, `empty`, `malformed` and
+`stale` as distinct diagnostics.
 
 This sentinel is an **overlay-version barrier**, not a general schema-migration
 barrier. An image/schema-only upgrade can leave the canonical overlay checksum
@@ -315,21 +338,156 @@ and the final operator procedure by the
 [A10 handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008);
 both must land before the first supported release or upgrade.
 
-## Capture values exposed before the edge workload
+## Serving path and the proxy boundary
+
+The web pod runs `migrate` then `static-copy` as initContainers, and `gunicorn`
+then `nginx` as its containers.
+
+**Gunicorn binds `127.0.0.1:8000` and nothing else.** That bind, not a network
+policy, is the boundary that makes gunicorn's own `FORWARDED_ALLOW_IPS` default
+(`127.0.0.1,::1`) trustworthy — anything that could reach `:8000` directly could
+also set `X-Forwarded-For` and be treated as an admin. Standard NetworkPolicy
+selects pods, not containers, so it cannot express "same pod only"; there is no
+selector that would do this job, which is why the bind does it. Gunicorn
+advertises no `containerPort` and its probes are `exec`, because a kubelet probe
+connects to the pod IP that loopback-bound gunicorn never answers.
+
+nginx listens on `:8080` and is the only Service target. It serves exactly two
+things: the images subtree of the data volume, mounted read-only through a
+`subPath` so the container cannot reach the `.state` sibling holding database
+dumps and the Alembic tree, and the static assets `static-copy` copied out of
+the web image. Everything else is a 404, dot paths included — 404 rather than
+403, because a 403 confirms the path exists. `/healthz` is nginx's own liveness
+and readiness endpoint and deliberately does not touch gunicorn.
+
+`X-Forwarded-Proto` is honoured when an upstream proxy sets `http` or `https`
+and otherwise falls back to this hop's own scheme, so the application builds
+`https://` URLs behind a TLS-terminating Ingress and correct URLs without one.
+
+`web.ingress` is off by default and renders a single host with the configured
+class name, annotations and optional TLS when enabled.
+
+## Network policy
+
+`networkPolicy.enabled` defaults to `true` and renders **ingress-only**
+policies:
+
+- the web pod admits `:8080` and nothing else — notably not gunicorn's `:8000`;
+- the edge pod admits no ingress at all;
+- the internal database admits `:3306` only from this release's `web`, `edge`
+  and `mariadb-backup` components, selected by label in the same namespace —
+  never a namespace-wide allow.
+
+**No egress policy is rendered anywhere, deliberately.** The chart supports an
+external database, an OIDC provider, an MQTT broker, upload targets and an
+external INDI server; standard NetworkPolicy cannot express those destinations
+portably, and a partial egress policy would break them while looking like
+protection. Set `networkPolicy.enabled: false` if your CNI does not enforce
+NetworkPolicy and you would rather not carry objects that do nothing.
+
+The database policy renders only when `mariadb.enabled` is `true`. With an
+external database there is no pod here to select.
+
+## Edge scheduling, devices and priority
 
 ```yaml
 edge:
+  priorityClass:
+    mode: create            # create | reference | disabled
+    name: ""
+    value: 1000000
+    preemptionPolicy: PreemptLowerPriority
+  supplementalGroups: []
   captureTmpDir: ""
-  darks:
+  sensors:
     enabled: false
-    daytime: true
-    bitmax: 16
-    mode: average
+  devices:
+    mode: none              # none | device-plugin | hostpath
 ```
 
-`captureTmpDir`, when set, must be absolute. Dark mode is one of `flush`,
+**Secure defaults.** `devices.mode: none` runs the INDI simulator: the edge pod
+schedules anywhere, mounts no host path, and runs no privileged container.
+Sensors are off, and there are no supplemental groups. Nothing in the default
+values requires a camera node or host devices.
+
+| Mode | Scheduling | Privilege |
+| --- | --- | --- |
+| `none` | anywhere | none |
+| `device-plugin` (preferred for hardware) | extended resource, no node label | none |
+| `hostpath` (explicit opt-in) | camera and/or sensor node label | `indiserver` privileged for a local camera |
+
+Host device entries are objects, never bare strings, and the chart renders the
+`type` and `readOnly` you state rather than inferring access from a path:
+
+```yaml
+edge:
+  devices:
+    mode: hostpath
+    camera:
+      hostPaths:
+        - path: /dev/bus/usb
+          type: Directory      # Directory | CharDevice
+          readOnly: false
+    sensors:
+      hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+        - path: /sys/bus/w1    # the one-wire tree is only read
+          type: Directory
+          readOnly: true
+```
+
+Device-plugin resources merge into the correct container's requests *and*
+limits without replacing the base cpu/memory: the camera resource goes to
+`indiserver`, the sensor resource to `daemon`.
+
+`supplementalGroups` is rejected outside `hostpath` mode, because group ids only
+grant access to host device nodes. Sensor placement is independent of the
+camera: enabling hostPath sensors adds the sensors label whether or not a camera
+is attached locally.
+
+**PriorityClass ownership is a tri-state, because a PriorityClass is
+cluster-scoped while a release is not.** `create` (the default) makes this
+release own one class whose generated name carries the namespace, the release
+identity, and the spec it intends, so two releases cannot silently target the
+same object. `reference` points at a class an external owner — IaC/CI, or one
+designated release — created, and renders no object. `disabled` renders neither
+the object nor `priorityClassName`. `name` is required in `reference` mode and
+rejected in the other two. Values above Kubernetes'
+`HighestUserDefinablePriority` (1000000000) are rejected at render time.
+
+`indiserver.mode: external` removes the sidecar and every local camera mount,
+resource and privilege, and removes the camera node requirement. Independently
+enabled sensors keep working.
+
+`captureTmpDir`, when set, must be absolute. Empty keeps the image default;
+`/tmp` reuses the daemon container's existing scratch emptyDir; any other path
+gets a dedicated emptyDir and is rejected if it would overlap the rendered
+config, the projected overlay, or the data volume. Dark mode is one of `flush`,
 `average`, `tempaverage`, `sigmaclip`, or `tempsigmaclip`; booleans and whole
 numbers are type-checked at Helm render time.
+
+## Secret projection
+
+The application Secret is **never** consumed through a blanket `envFrom`. Each
+container declares an explicit `secretKeyRef` allowlist:
+
+| Container | Receives |
+| --- | --- |
+| `migrate` | database and Flask keys, plus the OIDC and admin-seed keys when those features are enabled |
+| `gunicorn` | database and Flask keys, plus OIDC keys — never the admin bootstrap password |
+| `daemon` | database and Flask keys only |
+| `static-copy`, `nginx`, `wait-for-overlay`, `indiserver` | nothing |
+
+Chart-owned non-secret settings arrive through the env ConfigMap's `envFrom`, so
+an opaque Secret cannot override them. Optional keys are projected with
+`optional: true`, which keeps the documented "OIDC client id and discovery
+endpoint may live in either place" behaviour working with
+`credentials.existingSecret`.
+
+The separate MariaDB root Secret reaches the database container and nothing
+else. CI proves that over the whole rendered release, not just per workload.
 
 ## Render-time validation and naming
 
