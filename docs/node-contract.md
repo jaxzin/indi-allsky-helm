@@ -115,11 +115,40 @@ device nodes are reached through `edge.supplementalGroups`. The Global
 Constraint's exemption for device-attached containers does not extend to the
 daemon by adjacency, and this sentence is the written record of that decision.
 
+## Limitations that are not about node placement
+
+Two properties of a default install surprise people, so they are stated here
+rather than left to be discovered.
+
+**The image archive is served unauthenticated, regardless of
+`web.authAllViews`.** The nginx sidecar serves `/indi-allsky/images` directly
+off the data volume with an `alias`; those requests never reach gunicorn, so
+Flask's authentication — including `authAllViews: true` — never sees them.
+Anything that can reach the web Service can read every captured image,
+timelapse and keogram. Everything *else* is proxied and does go through the
+application's auth. If you need a private archive, gate it in front of the
+chart: an authenticating Ingress, an identity-aware proxy, or simply not
+publishing the Ingress. See
+[configuration.md](configuration.md#serving-path-and-the-proxy-boundary) for
+the serving path this follows from.
+
+**Pin images by digest in production.** `image.digests.indiserver`,
+`image.digests.daemon` and `image.digests.web` are the pin slots, and every
+chart release publishes the digests it was tested against in its release notes.
+Left empty, the chart resolves each image by a mutable tag while
+`image.pullPolicy` defaults to `IfNotPresent` — so a node that already cached
+the tag keeps what it cached while a fresh node pulls whatever the tag points at
+today, and two nodes in one cluster can run different code under one release
+without anything reporting a difference. That matters most for the one container
+this chart will make privileged.
+
 ## Host preparation
 
 Node state is an **input** to this chart, owned by whatever configures your
 nodes — Ansible, Terraform/OpenTofu, a machine image, or your cluster's own
-bootstrap. The chart never mutates a node.
+bootstrap. The chart never mutates a node. The practical checklist —
+dtoverlays, udev rules, group ids, `nfs-common` — is in
+[host-prep.md](host-prep.md).
 
 What `edge.devices.mode: hostpath` assumes you have already arranged:
 

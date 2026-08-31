@@ -1,0 +1,102 @@
+# Flux HelmRelease installing the published OCI chart.
+#
+# The values below are the minimum an install needs plus the ones most people
+# get wrong; the full worked example, with hardware, sensors and MQTT, is
+# examples/values-zwo-pi.yaml. Every CHANGE ME describes your site, your
+# hardware or your cluster, and the chart cannot guess any of them.
+#
+# If you would rather keep values in git alongside your other Flux manifests,
+# drop the inline `values:` and point `valuesFrom` at a ConfigMap or Secret you
+# reconcile from your own repo.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: indi-allsky
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://ghcr.io/jaxzin/charts
+  interval: 1h
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: indi-allsky
+  namespace: indi-allsky
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: indi-allsky
+      # A chart version, not the git tag: the release `chart-v0.1.0` publishes
+      # chart version 0.1.0. Pinned exactly — a `0.1.x` range would let a patch
+      # release land without a reviewed diff.
+      version: "0.1.0"
+      sourceRef:
+        kind: HelmRepository
+        name: indi-allsky
+        namespace: flux-system
+  values:
+    image:
+      # The production path. Each chart version's release notes publish the
+      # three digests it was tested against. Left empty, the chart resolves
+      # mutable tags under pullPolicy IfNotPresent, so a node that cached the
+      # tag earlier can run different code than one pulling it fresh.
+      # CHANGE ME — copy from the release notes for the version pinned above.
+      digests:
+        indiserver: ""
+        daemon: ""
+        web: ""
+
+    # Bring your own Secret with INDIALLSKY_FLASK_SECRET_KEY,
+    # INDIALLSKY_FLASK_PASSWORD_KEY and MARIADB_PASSWORD. Losing the Fernet
+    # password key makes stored application passwords unrecoverable, so keep it
+    # wherever you keep your other secrets.
+    credentials:
+      existingSecret: indi-allsky-env
+
+    mariadb:
+      enabled: true
+      # Separate, and never mounted into an application or backup workload.
+      # Key: MARIADB_ROOT_PASSWORD. Preserve it — it is recovery material a
+      # schema dump does not contain.
+      rootCredentials:
+        existingSecret: indi-allsky-mariadb-root
+
+    storage:
+      data:
+        # RWX because the edge pod is pinned to the camera node and the web pod
+        # is not. CHANGE ME — your RWX storage class.
+        storageClassName: nfs-csi
+        accessModes: [ReadWriteMany]
+        size: 250Gi
+
+    web:
+      ingress:
+        enabled: true
+        className: traefik
+        # CHANGE ME
+        host: allsky.example.com
+
+    # CHANGE ME — timestamps and capture scheduling use this zone.
+    timezone: America/New_York
+
+    # Defaults to the INDI simulator, which needs no hardware and no node
+    # label. Switch to hostpath or device-plugin, add your driver, and read
+    # docs/host-prep.md before pointing it at a real camera.
+    indiserver:
+      ccdDriver: indi_simulator_ccd
+
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  # Uninstall deliberately leaves both generated PVCs behind while
+  # storage.retentionPolicy is Retain (the default). To remove them, first
+  # reconcile a release with storage.retentionPolicy: Delete, confirm neither
+  # PVC still carries helm.sh/resource-policy: keep, and only then uninstall.
+  uninstall:
+    keepHistory: false

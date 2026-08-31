@@ -1,0 +1,239 @@
+name: release
+
+# Cut a chart release by pushing an annotated tag `chart-v<semver>` at the
+# commit you want published. Everything below is derived from that tag and from
+# files already in the tree — nothing about a release is typed into a form.
+on:
+  push:
+    tags: ["chart-v*"]
+
+# Read-only by default; the one job that publishes widens to exactly what it
+# needs and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release in flight: a half-cancelled run can leave a pushed
+  # chart with no GitHub Release describing it.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the GitHub Release
+      packages: write # push the OCI chart to GHCR
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # The SHA above pins the action, not helm — pin helm explicitly too.
+          version: v3.21.4
+
+      # The tag is the only human input to a release, so it is the one thing
+      # that can disagree with the tree. `helm package --version` would happily
+      # override Chart.yaml and publish a chart whose in-repo version says
+      # something else, so refuse instead: Chart.yaml stays the source of truth
+      # and the tag has to agree with it.
+      - name: Tag, chart version and upstream pin agree
+        id: pin
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#chart-v}"
+          chart_version="$(yq -r .version charts/indi-allsky/Chart.yaml)"
+          app_version="$(yq -r .appVersion charts/indi-allsky/Chart.yaml)"
+          upstream_tag="$(cat UPSTREAM_VERSION)"
+
+          if [ "$version" != "$chart_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} implies chart version ${version}, but charts/indi-allsky/Chart.yaml says ${chart_version}."
+            exit 1
+          fi
+          if [ "$app_version" != "$upstream_tag" ]; then
+            echo "::error::Chart.yaml appVersion (${app_version}) and UPSTREAM_VERSION (${upstream_tag}) have drifted — the release would name an upstream version it was not built against."
+            exit 1
+          fi
+
+          echo "chart ${version}, upstream ${upstream_tag}, commit ${GITHUB_SHA}"
+          {
+            echo "version=${version}"
+            echo "upstream_tag=${upstream_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Recording the digests is not paperwork — it is the only way a consumer
+      # can pin `image.digests.*` to what this chart version was actually
+      # tested against. Resolved here rather than pasted in by hand, and
+      # resolved BEFORE anything is published, so a release cannot describe
+      # images that do not exist at the pinned upstream tag.
+      - name: Resolve published image digests
+        id: digests
+        env:
+          REGISTRY: ghcr.io/jaxzin
+          UPSTREAM_TAG: ${{ steps.pin.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          for image in indiserver daemon web; do
+            ref="${REGISTRY}/indi-allsky-${image}:${UPSTREAM_TAG}"
+            digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"
+            case "$digest" in
+              sha256:*) ;;
+              *)
+                echo "::error::${ref} did not resolve to a manifest digest (got '${digest}')"
+                exit 1
+                ;;
+            esac
+            echo "${image}: ${ref} -> ${digest}"
+            echo "${image}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      # `helm registry login` keeps its own credential store, separate from the
+      # docker login above, so both are needed. --password-stdin keeps the token
+      # out of the process table.
+      - name: Package and push the chart
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" |
+            helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/indi-allsky --version "$VERSION"
+          helm push "indi-allsky-${VERSION}.tgz" oci://ghcr.io/jaxzin/charts
+
+      # Prove the artifact is consumable the way the README tells operators to
+      # consume it, rather than trusting that a successful push implies a
+      # working pull.
+      - name: Verify the published chart is pullable
+        env:
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          helm pull oci://ghcr.io/jaxzin/charts/indi-allsky \
+            --version "$VERSION" --destination "$work"
+          test -s "${work}/indi-allsky-${VERSION}.tgz"
+          helm show chart "${work}/indi-allsky-${VERSION}.tgz"
+
+      # The template is a quoted heredoc so its backticks and ${...} stay
+      # literal markdown; the release facts are substituted afterwards. Every
+      # substituted value is a semver, a git SHA, an upstream tag or a
+      # sha256: digest, none of which can contain the `|` delimiter — and the
+      # tag itself is already constrained to `chart-v<Chart.yaml version>` by
+      # the pin gate above, so it cannot smuggle one in either.
+      - name: Compose the release notes preamble
+        env:
+          VERSION: ${{ steps.pin.outputs.version }}
+          UPSTREAM_TAG: ${{ steps.pin.outputs.upstream_tag }}
+          INDISERVER_DIGEST: ${{ steps.digests.outputs.indiserver }}
+          DAEMON_DIGEST: ${{ steps.digests.outputs.daemon }}
+          WEB_DIGEST: ${{ steps.digests.outputs.web }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.tmpl <<'TEMPLATE'
+          ## Install
+
+          ```sh
+          helm install allsky oci://ghcr.io/jaxzin/charts/indi-allsky --version @VERSION@
+          ```
+
+          Start from [`examples/values-zwo-pi.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/values-zwo-pi.yaml),
+          and read [`docs/host-prep.md`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/docs/host-prep.md)
+          before pointing this at real hardware.
+
+          ## What this release pins
+
+          | | |
+          | --- | --- |
+          | Chart version | `@VERSION@` |
+          | Chart commit | [`@COMMIT@`](https://github.com/jaxzin/indi-allsky-helm/commit/@COMMIT@) |
+          | Upstream indi-allsky | [`@UPSTREAM_TAG@`](https://github.com/aaronwmorris/indi-allsky/releases/tag/@UPSTREAM_TAG@) |
+
+          ## Image digests — the production pinning path
+
+          These are the exact multi-arch manifests this chart version was
+          resolved against, read out of the registry by the release workflow.
+          Copy them into your values:
+
+          ```yaml
+          image:
+            digests:
+              indiserver: "@INDISERVER_DIGEST@"
+              daemon: "@DAEMON_DIGEST@"
+              web: "@WEB_DIGEST@"
+          ```
+
+          **Digest pinning is the intended production path.** With
+          `image.digests.*` left empty the chart resolves each image by the
+          mutable tag `@UPSTREAM_TAG@`, and `image.pullPolicy` defaults to
+          `IfNotPresent`: a node that already cached that tag keeps what it
+          cached, while a node pulling for the first time gets whatever the tag
+          points at today. Two nodes in one cluster can then run different code
+          under one release, silently. Digests remove that.
+
+          ## Consuming this release
+
+          - **Operators** install the OCI chart above.
+          - **GitOps** — see
+            [`examples/argocd-application.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/argocd-application.yaml)
+            and
+            [`examples/flux-helmrelease.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/flux-helmrelease.yaml).
+          - **Anyone consuming the chart from git** pins `charts/indi-allsky`
+            at commit `@COMMIT@`, not at a branch.
+
+          ## Before production
+
+          Read the
+          [credential lifecycle, storage lifecycle, backup protection and
+          restore](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/docs/configuration.md#credential-lifecycle-and-root-recovery)
+          sections. In short: changing a Kubernetes Secret does **not** rotate an
+          account in an already-initialized MariaDB datadir, the chart renders no
+          automatic restore or root-recovery Job, both PVCs belong to exactly one
+          release, and `.sql.gz` dumps are compressed rather than encrypted.
+
+          ---
+          TEMPLATE
+
+          # Redirect rather than `sed -i`: BSD sed spells that flag differently,
+          # and this step should be runnable by hand on any machine before
+          # anyone reaches for a throwaway tag to test it in CI.
+          sed \
+            -e "s|@VERSION@|${VERSION}|g" \
+            -e "s|@TAG@|${GITHUB_REF_NAME}|g" \
+            -e "s|@COMMIT@|${GITHUB_SHA}|g" \
+            -e "s|@UPSTREAM_TAG@|${UPSTREAM_TAG}|g" \
+            -e "s|@INDISERVER_DIGEST@|${INDISERVER_DIGEST}|g" \
+            -e "s|@DAEMON_DIGEST@|${DAEMON_DIGEST}|g" \
+            -e "s|@WEB_DIGEST@|${WEB_DIGEST}|g" \
+            release-notes.tmpl > release-notes.md
+
+          if grep -n '@[A-Z_]*@' release-notes.md; then
+            echo "::error::release notes still contain an unsubstituted placeholder"
+            exit 1
+          fi
+
+          cat release-notes.md
+
+      # `generate_release_notes` appends GitHub's own commit/PR summary AFTER
+      # the body above, so the release carries both the facts we recorded and
+      # the change list GitHub derives.
+      #
+      # First release only: a freshly created GHCR package is private, and the
+      # pull verification above passes anyway because it uses the credentials it
+      # pushed with. The chart package's visibility has to be set to public
+      # once, in the GHCR package settings, before anonymous
+      # `helm install oci://…` works for anyone else. GitHub exposes no API for
+      # it, so it cannot live here — issue #45 owns it.
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          body_path: release-notes.md
+          generate_release_notes: true
