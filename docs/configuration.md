@@ -390,7 +390,13 @@ policies:
 - the edge pod admits no ingress at all;
 - the internal database admits `:3306` only from this release's `web`, `edge`
   and `mariadb-backup` components, selected by label in the same namespace —
-  never a namespace-wide allow.
+  never a namespace-wide allow;
+- the optional MQTT broker admits `:1883` only from this release's `edge`
+  component, the one component that is an MQTT client. That broker has no
+  authentication in v1, so this policy is its only access control. Consumers
+  outside the release — Home Assistant, a dashboard, upstream's remote-sensor
+  helpers — are admitted by an additional policy you own, which unions with
+  this one rather than replacing it. See [topologies.md](topologies.md).
 
 **No egress policy is rendered anywhere, deliberately.** The chart supports an
 external database, an OIDC provider, an MQTT broker, upload targets and an
@@ -399,8 +405,10 @@ portably, and a partial egress policy would break them while looking like
 protection. Set `networkPolicy.enabled: false` if your CNI does not enforce
 NetworkPolicy and you would rather not carry objects that do nothing.
 
-The database policy renders only when `mariadb.enabled` is `true`. With an
-external database there is no pod here to select.
+The database policy renders only when `mariadb.enabled` is `true`, and the
+broker policy only when `mosquitto.enabled` is `true`. With an external database
+or an external broker there is no pod here to select, and a policy for one that
+does not exist would be misleading rather than protective.
 
 ## Edge scheduling, devices and priority
 

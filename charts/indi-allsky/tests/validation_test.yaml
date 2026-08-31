@@ -1205,3 +1205,116 @@ tests:
       web.ingress.host: "*.example.com"
     asserts:
       - hasDocuments: {count: 0}
+
+  # --- optional broker and node feature discovery -------------------------
+
+  - it: rejects a non-boolean mosquitto toggle
+    set:
+      mosquitto.enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorMessage: "mosquitto.enabled must be a boolean"
+
+  - it: rejects an empty mosquitto image
+    set:
+      mosquitto.enabled: true
+      mosquitto.image: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "mosquitto.image must be set and non-empty"
+
+  - it: rejects a non-map mosquitto node selector
+    set:
+      mosquitto.enabled: true
+      mosquitto.nodeSelector: arm64
+    asserts:
+      - failedTemplate:
+          errorMessage: "mosquitto.nodeSelector must be a map/object"
+
+  - it: rejects non-map mosquitto resources
+    set:
+      mosquitto.enabled: true
+      mosquitto.resources: small
+    asserts:
+      - failedTemplate:
+          errorMessage: "mosquitto.resources must be a map/object"
+
+  - it: ignores mosquitto shape when the broker is disabled
+    set:
+      mosquitto.image: ""
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: rejects a non-boolean discovery toggle
+    set:
+      discovery.nfd.enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.enabled must be a boolean"
+
+  # An unquoted hex id in values.yaml is a YAML integer. toJson would render it
+  # as a bare number, and the NodeFeatureRule CRD types these as strings.
+  - it: rejects an unquoted integer USB vendor id
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: [1618]
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.usbVendorIds[0] must be a quoted string — an unquoted hex id such as 1618 is a YAML integer and the NodeFeatureRule CRD requires strings"
+
+  # nfd-worker reports the sysfs idVendor in lowercase, so an uppercase id
+  # renders a perfectly valid rule that silently never matches anything.
+  - it: rejects an uppercase USB vendor id
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: ["03C3"]
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.usbVendorIds[0] must be exactly four lowercase hex digits, as nfd-worker reports the sysfs idVendor"
+
+  - it: rejects a USB vendor id that is not four hex digits
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: ["0x03c3"]
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.usbVendorIds[0] must be exactly four lowercase hex digits, as nfd-worker reports the sysfs idVendor"
+
+  - it: rejects an empty USB vendor id
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: [""]
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.usbVendorIds[0] must be set and non-empty"
+
+  # `In` with an empty value list is rejected by NFD itself, and a rule that
+  # matches nothing is not a useful thing to have applied.
+  - it: rejects an empty USB vendor list
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: []
+    asserts:
+      - failedTemplate:
+          errorMessage: "discovery.nfd.usbVendorIds must contain at least one vendor id when discovery.nfd.enabled=true"
+
+  - it: rejects a non-list USB vendor id value
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: "03c3"
+    asserts:
+      - failedTemplate:
+          errorMessage: 'discovery.nfd.usbVendorIds must be a list of quoted lowercase 4-hex-digit USB vendor ids, e.g. ["03c3"]'
+
+  - it: ignores the vendor list when discovery is disabled
+    set:
+      discovery.nfd.usbVendorIds: [1618]
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: accepts an operator's extended vendor list
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: ["03c3", "1618", "0547"]
+    asserts:
+      - hasDocuments: {count: 0}

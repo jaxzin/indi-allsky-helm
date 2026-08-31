@@ -1,0 +1,334 @@
+suite: extras
+values:
+  - a5-values.yaml
+templates:
+  - mosquitto-deployment.yaml
+  - mosquitto-service.yaml
+  - networkpolicy-mosquitto.yaml
+  - nfd-rule.yaml
+release:
+  name: test-release
+  namespace: test-namespace
+tests:
+  # Both extras are opt-in. A default install carries no broker and no
+  # NodeFeatureRule, so a cluster without NFD installed never sees a custom
+  # resource whose CRD is absent.
+  - it: nothing renders by default
+    asserts:
+      - hasDocuments: {count: 0}
+
+  # Three objects, not the plan's two: the broker gets the same default-on,
+  # component-scoped ingress policy every other workload in this chart has.
+  - it: mosquitto renders its workload, Service and policy when enabled
+    templates:
+      - mosquitto-deployment.yaml
+      - mosquitto-service.yaml
+      - networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+
+  - it: names every mosquitto object for the release
+    templates:
+      - mosquitto-deployment.yaml
+      - mosquitto-service.yaml
+      - networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: metadata.name, value: test-release-indi-allsky-mosquitto}
+
+  # ---- broker workload -------------------------------------------------
+
+  - it: runs one broker, replaced rather than surged
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: kind, value: Deployment}
+      - equal: {path: spec.replicas, value: 1}
+      # Two mosquitto pods behind one Service would split subscribers across
+      # brokers that share no state.
+      - equal: {path: spec.strategy.type, value: Recreate}
+      - equal:
+          path: 'spec.selector.matchLabels["app.kubernetes.io/component"]'
+          value: mosquitto
+
+  # 1883 is the uid the eclipse-mosquitto image establishes for itself and the
+  # owner of its whole /mosquitto tree. The image ships no USER directive, so
+  # without this the broker would run as root.
+  - it: runs as the image's own non-root mosquitto uid, not the chart's app uid
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: spec.template.spec.securityContext.runAsNonRoot, value: true}
+      - equal: {path: spec.template.spec.securityContext.runAsUser, value: 1883}
+      - equal: {path: spec.template.spec.securityContext.runAsGroup, value: 1883}
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 1883
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+      - lengthEqual:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal: {path: spec.template.spec.automountServiceAccountToken, value: false}
+
+  # Mosquitto 2.0's packaged config is entirely commented out, which means a
+  # local-only listener with anonymous access denied — unreachable from any
+  # other pod. The image's no-auth config is what matches what v1 offers.
+  - it: starts the broker directly on the image's unauthenticated config
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["/usr/sbin/mosquitto", "-c", "/mosquitto-no-auth.conf"]
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: eclipse-mosquitto:2.0
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 1883
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: mqtt
+
+  # The no-auth config enables neither persistence nor file logging, so the
+  # broker writes nothing and needs no volume. A volume appearing here would
+  # mean something started writing state this chart does not manage.
+  - it: mounts no volume and needs no writable path
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - notExists: {path: spec.template.spec.volumes}
+      - notExists: {path: "spec.template.spec.containers[0].volumeMounts"}
+      - notExists: {path: spec.template.spec.securityContext.fsGroup}
+
+  # TCP, because mosquitto speaks MQTT rather than HTTP.
+  - it: probes the listener over TCP
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: "spec.template.spec.containers[0].readinessProbe.tcpSocket.port", value: mqtt}
+      - equal: {path: "spec.template.spec.containers[0].livenessProbe.tcpSocket.port", value: mqtt}
+      - notExists: {path: "spec.template.spec.containers[0].startupProbe"}
+
+  - it: has no environment at all
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - notExists: {path: "spec.template.spec.containers[0].env"}
+      - notExists: {path: "spec.template.spec.containers[0].envFrom"}
+
+  - it: carries pull secrets, node selector and resources when set
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+      mosquitto.image: mirror.example.com/eclipse-mosquitto:2.0.21
+      mosquitto.nodeSelector: {kubernetes.io/arch: arm64}
+      mosquitto.resources:
+        requests: {cpu: 50m, memory: 32Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+      image.pullSecrets:
+        - name: registry-credentials
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: mirror.example.com/eclipse-mosquitto:2.0.21
+      - equal:
+          path: 'spec.template.spec.nodeSelector["kubernetes.io/arch"]'
+          value: arm64
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: registry-credentials
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 64Mi
+
+  - it: omits the optional blocks when they are empty
+    template: mosquitto-deployment.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - notExists: {path: spec.template.spec.nodeSelector}
+      - notExists: {path: spec.template.spec.imagePullSecrets}
+      - notExists: {path: "spec.template.spec.containers[0].resources"}
+
+  # ---- broker Service --------------------------------------------------
+
+  - it: publishes the broker on 1883
+    template: mosquitto-service.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: kind, value: Service}
+      - equal: {path: spec.type, value: ClusterIP}
+      - equal: {path: "spec.ports[0].port", value: 1883}
+      - equal: {path: "spec.ports[0].targetPort", value: mqtt}
+      - equal: {path: "spec.ports[0].name", value: mqtt}
+      - lengthEqual: {path: spec.ports, count: 1}
+      - equal:
+          path: 'spec.selector["app.kubernetes.io/component"]'
+          value: mosquitto
+      - equal:
+          path: 'spec.selector["app.kubernetes.io/instance"]'
+          value: test-release
+
+
+  # ---- broker NetworkPolicy --------------------------------------------
+
+  # The broker has no authentication in v1, so this policy is the only access
+  # control it has: without it every pod in the cluster could subscribe to and
+  # publish on this release's topics.
+  - it: admits 1883 only from this release's edge pod
+    template: networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+      - equal: {path: kind, value: NetworkPolicy}
+      - equal:
+          path: 'spec.podSelector.matchLabels["app.kubernetes.io/component"]'
+          value: mosquitto
+      - equal: {path: "spec.ingress[0].ports[0].port", value: 1883}
+      - lengthEqual: {path: "spec.ingress[0].ports", count: 1}
+      - equal:
+          path: 'spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/component"]'
+          value: edge
+      - equal:
+          path: 'spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/instance"]'
+          value: test-release
+      - equal:
+          path: 'spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/name"]'
+          value: indi-allsky
+      # Never a namespace-wide allow, and never a peer this release does not own.
+      - notExists: {path: "spec.ingress[0].from[0].namespaceSelector"}
+      - lengthEqual: {path: "spec.ingress[0].from", count: 1}
+      - lengthEqual: {path: spec.ingress, count: 1}
+
+  - it: renders no egress policy on the broker
+    template: networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - notExists: {path: spec.egress}
+      - lengthEqual: {path: spec.policyTypes, count: 1}
+      - notContains: {path: spec.policyTypes, content: Egress}
+
+  - it: still runs the broker when NetworkPolicy is switched off
+    templates:
+      - mosquitto-deployment.yaml
+      - mosquitto-service.yaml
+    set:
+      mosquitto.enabled: true
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments: {count: 1}
+
+  - it: renders no broker policy when NetworkPolicy is switched off
+    template: networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: true
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments: {count: 0}
+
+  # No broker pod exists to select, exactly as with an external database.
+  - it: renders no broker policy when the broker is not chart-managed
+    template: networkpolicy-mosquitto.yaml
+    set:
+      mosquitto.enabled: false
+    asserts:
+      - hasDocuments: {count: 0}
+
+  # ---- NodeFeatureRule -------------------------------------------------
+
+  - it: nfd rule carries the vendor list
+    template: nfd-rule.yaml
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+      - equal: {path: apiVersion, value: nfd.k8s-sigs.io/v1alpha1}
+      - equal: {path: kind, value: NodeFeatureRule}
+      - equal: {path: "spec.rules[0].matchFeatures[0].feature", value: usb.device}
+      - equal: {path: "spec.rules[0].matchFeatures[0].matchExpressions.vendor.op", value: In}
+      - contains:
+          path: spec.rules[0].matchFeatures[0].matchExpressions.vendor.value
+          content: "03c3"
+      - contains:
+          path: spec.rules[0].matchFeatures[0].matchExpressions.vendor.value
+          content: "1618"
+      - lengthEqual:
+          path: spec.rules[0].matchFeatures[0].matchExpressions.vendor.value
+          count: 2
+
+  - it: labels matching nodes with the node contract's camera label
+    template: nfd-rule.yaml
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      - equal:
+          path: 'spec.rules[0].labels["indi-allsky.io/camera"]'
+          value: "true"
+      - lengthEqual: {path: spec.rules, count: 1}
+
+  - it: follows a relabelled node contract
+    template: nfd-rule.yaml
+    set:
+      discovery.nfd.enabled: true
+      nodeContract.cameraLabel: example.com/allsky-camera
+    asserts:
+      - equal:
+          path: 'spec.rules[0].labels["example.com/allsky-camera"]'
+          value: "true"
+
+  - it: takes an operator's own vendor list
+    template: nfd-rule.yaml
+    set:
+      discovery.nfd.enabled: true
+      discovery.nfd.usbVendorIds: ["1618"]
+    asserts:
+      - equal:
+          path: spec.rules[0].matchFeatures[0].matchExpressions.vendor.value
+          value: ["1618"]
+
+
+  # The broker and the discovery rule are independent opt-ins.
+  - it: renders the rule without the broker
+    template: nfd-rule.yaml
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      - hasDocuments: {count: 1}
+      - equal: {path: kind, value: NodeFeatureRule}
+
+  - it: renders no broker when only discovery is enabled
+    templates:
+      - mosquitto-deployment.yaml
+      - mosquitto-service.yaml
+      - networkpolicy-mosquitto.yaml
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      - hasDocuments: {count: 0}

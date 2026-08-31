@@ -21,10 +21,14 @@ kubectl label node cam01.example.com indi-allsky.io/camera=true
 
 Optionally, [Node Feature Discovery](https://github.com/kubernetes-sigs/node-feature-discovery)
 can autodiscover USB astro cameras and apply the label for you — see the
-`discovery.nfd.*` values. Note that NFD's `usb` source only reports device
-classes on its `deviceClassWhitelist`, so you may need to extend the NFD
-worker configuration before your camera shows up. Fuller NFD guidance is
-coming with the discovery documentation.
+`discovery.nfd.*` values and [topologies.md](topologies.md). NFD has to be
+installed already; the chart renders the `NodeFeatureRule`, not NFD itself.
+
+No NFD *worker* configuration is needed. An earlier draft of this page warned
+that `sources.usb.deviceClassWhitelist` would hide cameras outside its default
+classes; that is true only of NFD's own built-in `usb-*.present` labels. A
+`NodeFeatureRule` matches the raw `usb.device` feature set, which nfd-worker
+discovers from every `/sys/bus/usb/devices` entry regardless of class.
 
 ### `indi-allsky.io/sensors: "true"`
 

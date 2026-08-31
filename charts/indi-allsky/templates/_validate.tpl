@@ -262,6 +262,36 @@ device access from the shape of a path.
   {{- include "indi-allsky.validatePattern" (dict "name" "web.ingress.host" "value" .Values.web.ingress.host "pattern" "^(\\*\\.)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" "allowEmpty" false "description" "must be a lowercase DNS hostname, optionally wildcarded as *.example.com") -}}
 {{- end -}}
 
+{{/* --- optional broker and node feature discovery ------------------------- */}}
+{{- include "indi-allsky.validateBool" (dict "name" "mosquitto.enabled" "value" .Values.mosquitto.enabled) -}}
+{{- if .Values.mosquitto.enabled -}}
+  {{- include "indi-allsky.validateString" (dict "name" "mosquitto.image" "value" .Values.mosquitto.image "allowEmpty" false) -}}
+  {{- if not (kindIs "map" .Values.mosquitto.nodeSelector) }}{{ fail "mosquitto.nodeSelector must be a map/object" }}{{ end -}}
+  {{- if not (kindIs "map" .Values.mosquitto.resources) }}{{ fail "mosquitto.resources must be a map/object" }}{{ end -}}
+{{- end -}}
+
+{{- include "indi-allsky.validateBool" (dict "name" "discovery.nfd.enabled" "value" .Values.discovery.nfd.enabled) -}}
+{{- if .Values.discovery.nfd.enabled -}}
+  {{/* NodeFeatureRule's matchExpression values are typed `array of string`, and
+       nfd-worker reports sysfs idVendor as four lowercase hex digits. An
+       unquoted 1618 in values.yaml is a YAML integer, which toJson renders as a
+       bare number the API server rejects; an uppercase 03C3 renders as a valid
+       object that silently never matches anything. Both are caught here rather
+       than at apply time or, worse, not at all. */}}
+  {{- if not (kindIs "slice" .Values.discovery.nfd.usbVendorIds) -}}
+    {{- fail "discovery.nfd.usbVendorIds must be a list of quoted lowercase 4-hex-digit USB vendor ids, e.g. [\"03c3\"]" -}}
+  {{- end -}}
+  {{- if eq (len .Values.discovery.nfd.usbVendorIds) 0 -}}
+    {{- fail "discovery.nfd.usbVendorIds must contain at least one vendor id when discovery.nfd.enabled=true" -}}
+  {{- end -}}
+  {{- range $index, $entry := .Values.discovery.nfd.usbVendorIds -}}
+    {{- if not (kindIs "string" $entry) -}}
+      {{- fail (printf "discovery.nfd.usbVendorIds[%d] must be a quoted string — an unquoted hex id such as 1618 is a YAML integer and the NodeFeatureRule CRD requires strings" $index) -}}
+    {{- end -}}
+    {{- include "indi-allsky.validatePattern" (dict "name" (printf "discovery.nfd.usbVendorIds[%d]" $index) "value" $entry "pattern" "^[0-9a-f]{4}$" "allowEmpty" false "description" "must be exactly four lowercase hex digits, as nfd-worker reports the sysfs idVendor") -}}
+  {{- end -}}
+{{- end -}}
+
 {{/* --- edge PriorityClass ownership --------------------------------------- */}}
 {{- $priorityClass := .Values.edge.priorityClass -}}
 {{- include "indi-allsky.validateEnum" (dict "name" "edge.priorityClass.mode" "value" $priorityClass.mode "allowed" (list "create" "reference" "disabled")) -}}

@@ -1,0 +1,150 @@
+# A ZWO ASI camera on a Raspberry Pi, with environmental sensors, an NFS
+# ReadWriteMany data volume, and the optional in-cluster MQTT broker.
+#
+# Copy this, change the marked values, and install with:
+#
+#   helm install allsky ./charts/indi-allsky -f examples/values-zwo-pi.yaml
+#
+# The resource names below assume the release is called `allsky`. Every value
+# marked CHANGE ME describes your hardware, your site or your cluster, and the
+# chart cannot guess any of them.
+
+indiserver:
+  # The INDI driver for ZWO ASI cameras. `indi_qhy_ccd` for QHY,
+  # `indi_simulator_ccd` to bring the stack up with no camera attached.
+  ccdDriver: indi_asi_ccd
+
+edge:
+  # hostpath: the camera is plugged into this node's USB. The indiserver
+  # sidecar becomes privileged for it; the daemon never does. Prefer
+  # device-plugin mode if a device plugin advertises your camera.
+  devices:
+    mode: hostpath
+    camera:
+      hostPaths:
+        # The whole USB bus, not a fixed device node: libusb rebinds the
+        # camera on every reconnect and the node number moves with it.
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    sensors:
+      hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+        - path: /dev/gpiochip0
+          type: CharDevice
+          readOnly: false
+        # A 1-wire probe such as a DS18B20 is only ever read.
+        - path: /sys/bus/w1
+          type: Directory
+          readOnly: true
+  sensors:
+    enabled: true
+  # CHANGE ME — group ids are node state, and they differ between
+  # distributions and releases. Read yours off the node itself:
+  #
+  #   getent group dialout gpio i2c | cut -d: -f1,3
+  #
+  # The container runs as uid 10001, so a device node it must open has to be
+  # world-accessible or owned by a group listed here. The values below are
+  # dialout/gpio/i2c on a Raspberry Pi OS bookworm image.
+  supplementalGroups: [20, 993, 994]
+  # Capture outranks ordinary workloads on the camera node. Switch to
+  # `reference` if your platform automation owns one shared class, or
+  # `disabled` on a node dedicated to this release.
+  priorityClass:
+    mode: create
+  # Off until the first frame exists — a missing latest.jpg counts as stale, so
+  # enabling this before capture has ever succeeded restart-loops the pod. Turn
+  # it on afterwards, with a threshold above your longest capture cadence.
+  freshnessProbe:
+    enabled: false
+  resources:
+    requests: {cpu: "1", memory: 1Gi}
+    limits: {cpu: "1", memory: 1Gi}
+
+web:
+  ingress:
+    enabled: true
+    className: traefik
+    # CHANGE ME
+    host: allsky.example.com
+    # Add a `tls:` block here if your cluster has no default certificate.
+  # The chart keeps session and remember-me cookies HTTPS-only. Set false only
+  # for a deliberately plain-HTTP deployment.
+  sessionCookieSecure: true
+
+storage:
+  data:
+    # RWX because web and edge can land on different nodes: edge is pinned to
+    # the camera node, web is not. A ReadWriteOnce volume forces them together.
+    # CHANGE ME — your RWX storage class.
+    storageClassName: nfs-csi
+    accessModes: [ReadWriteMany]
+    size: 250Gi
+
+# Autodiscovery of the camera node, so nothing has to label it by hand.
+# Requires Node Feature Discovery to be installed in the cluster; the chart
+# renders the rule, not NFD. Drop this block and label the node yourself if you
+# do not run NFD. See docs/topologies.md.
+discovery:
+  nfd:
+    enabled: true
+    usbVendorIds: ["03c3"]   # ZWO. Add "1618" for QHY. Quote them.
+
+# Optional in-cluster broker, so upstream's MQTT publishing has somewhere to
+# go without standing up one yourself. It has no authentication — the chart's
+# NetworkPolicy is its access control, and consumers outside this release need
+# an additional policy you own. See docs/topologies.md.
+mosquitto:
+  enabled: true
+  resources:
+    requests: {cpu: 50m, memory: 32Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+
+# GitOps-owned application settings, deep-merged over the app's database config
+# on every deploy. Everything not listed here stays owned by the web UI.
+appConfig:
+  # CHANGE ME — your site. Sun and moon calculations depend on these.
+  LOCATION_NAME: "Backyard"
+  LOCATION_LATITUDE: 40.0
+  LOCATION_LONGITUDE: -75.0
+  LOCATION_ELEVATION: 50
+  MQTTPUBLISH:
+    ENABLE: true
+    # The broker Service this chart renders is <release>-indi-allsky-mosquitto.
+    # CHANGE ME if your release is not called `allsky`.
+    HOST: allsky-indi-allsky-mosquitto
+    PORT: 1883
+    # Plain TCP inside the cluster: the v1 broker terminates no TLS. The
+    # NetworkPolicy is what keeps the topic private.
+    TLS: false
+    CERT_BYPASS: false
+    BASE_TOPIC: indi-allsky
+  # Credential-bearing keys such as MQTTPUBLISH.PASSWORD are rejected here on
+  # purpose — a ConfigMap is not a secret store. Configure those in the web UI
+  # after install.
+
+# Bring your own Secret carrying INDIALLSKY_FLASK_SECRET_KEY,
+# INDIALLSKY_FLASK_PASSWORD_KEY and MARIADB_PASSWORD. Losing
+# INDIALLSKY_FLASK_PASSWORD_KEY makes stored application passwords
+# unrecoverable, so keep it wherever you keep your other secrets.
+credentials:
+  existingSecret: indi-allsky-env
+
+mariadb:
+  enabled: true
+  # The root credential is separate and never reaches application or backup
+  # workloads. It must carry the key MARIADB_ROOT_PASSWORD.
+  rootCredentials:
+    existingSecret: indi-allsky-mariadb-root
+  persistence:
+    size: 8Gi
+  backup:
+    enabled: true
+    schedule: "20 4 * * *"
+    retentionDays: 14
+
+# CHANGE ME — the chart writes timestamps and schedules capture in this zone.
+timezone: America/New_York

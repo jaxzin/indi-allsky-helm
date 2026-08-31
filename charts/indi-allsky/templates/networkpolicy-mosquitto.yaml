@@ -1,0 +1,50 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- /*
+Only for the chart-managed broker. With mosquitto.enabled=false the broker an
+operator points MQTTPUBLISH at is somewhere this chart does not own and cannot
+select, exactly as with an external database.
+*/ -}}
+{{- if and .Values.networkPolicy.enabled .Values.mosquitto.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "indi-allsky.mosquittoName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mosquitto
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mosquitto") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- /*
+        This broker has no authentication in v1 — /mosquitto-no-auth.conf is
+        `allow_anonymous true` — so this policy is the only access control it
+        has. Without it, every pod in the cluster could subscribe to the image
+        and sensor topics this release publishes, and publish to them.
+
+        Same namespace (a podSelector with no namespaceSelector never crosses
+        one) and same release, narrowed to the one component that is an MQTT
+        client: the edge pod, where upstream's daemon, capture and uploader
+        processes live. Not a list like the database policy's: the web pod
+        renders the MQTT settings in its configuration form and imports paho
+        only to report the library's version on its system-info page — it
+        never constructs a client or opens a connection.
+
+        Legitimate consumers this chart cannot select — Home Assistant, a
+        dashboard, the remote-sensor and remote-libcamera helpers upstream
+        ships — are admitted by an additional NetworkPolicy the operator owns.
+        NetworkPolicies selecting the same pod are unioned, so that policy adds
+        its peers without editing or disabling this one. See
+        docs/topologies.md.
+        */}}
+        - podSelector:
+            matchLabels:
+              {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "edge") | nindent 14 }}
+      ports:
+        - port: {{ include "indi-allsky.mosquittoPort" . | int }}
+          protocol: TCP
+{{- end }}
