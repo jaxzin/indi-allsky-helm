@@ -279,22 +279,19 @@ migrations:
   preMigrateDumpKeep: 8
 ```
 
-The count must be an integer of at least one. The current pre-migration path
-writes directly to the timestamped final filename. A failed pipeline can leave
-a partial final-looking file, and two runs in the same second can collide. The
-script still aborts before schema mutation. Its `gzip -t` and non-empty checks
-are necessary integrity guards on a successful run, but they cannot prove that
-an artifact left by a failed, ambiguous, or overlapping run contains one
-complete SQL dump. Such an artifact is invalid and must not be salvaged, even
-if those checks pass.
-Before relying on recovery material, obtain an unambiguous pre-migration run
-that reaches its success message without overlap, or use an already-atomic
-scheduled backup. Permanent atomic publication and collision prevention for
-the pre-migration path are tracked in
-[issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22).
+The count must be an integer of at least one. Pre-migration and scheduled dumps
+now share one publication primitive
+([issue #22](https://github.com/jaxzin/indi-allsky-helm/issues/22)): each is
+written under `umask 077` to a uniquely named temporary file in the destination
+directory, verified non-empty and with `gzip -t`, chmodded `0600`, fsynced, and
+only then made visible under its final name as a hard link from that
+already-verified inode. A final-name collision is a nonzero error that leaves
+the existing artifact's bytes untouched and does not continue to schema
+mutation, so a published artifact is never partial and never a replacement.
+See [the container contract](container-contract.md#the-safety-property).
 
-Scheduled backups are separate and already use a unique temporary file,
-gzip/non-empty verification, and an atomic rename:
+Scheduled backups are a separate mechanism with their own trigger, their own
+`indi-allsky_scheduled_` prefix and their own retention:
 
 ```yaml
 mariadb:
@@ -331,12 +328,26 @@ A usable recovery set contains more than the SQL dump:
 Restore into a compatible MariaDB version and a prepared target schema/account
 with the required grants. Quiesce writers, verify the gzip stream and dump,
 restore it, restore the matching migration history and image data, then restart
-the workloads with the matching application Secret. The chart does not yet
-render a restore Job. The automated restore proof is owned by the
-[A9 handoff](https://github.com/jaxzin/indi-allsky-helm/issues/8#issuecomment-5417845854),
-and the final operator procedure by the
-[A10 handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008);
-both must land before the first supported release or upgrade.
+the workloads with the matching application Secret.
+
+The chart renders no restore Job, so this procedure is operator-run. It is not
+untested prose: `e2e/verify-restore.sh` performs exactly these steps against a
+live release in CI — it quiesces the capture daemon and the web pod, takes a
+scheduled dump, drops the database, recreates the schema with the connection
+settings' own charset and collation, restores the application account's grants,
+restores the dump, restarts the workloads with the unchanged application
+Secret, and then requires the application to decrypt the restored configuration
+and serve the restored image catalogue. It also runs the same preflight against
+a truncated dump and against a recovery set missing its migration history, and
+asserts that neither diagnostic contains a credential value.
+
+Two details that procedure measured and this document previously did not state:
+**a database-level grant survives `DROP DATABASE` on MariaDB**, so restoring
+grants is a verification step on a surviving server and a repair only on a
+rebuilt one; and the MariaDB root Secret is never mounted by any application or
+backup workload, so every root step above has to be run from inside the database
+container. The final operator-facing write-up is owned by the
+[A10 handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008).
 
 ## Serving path and the proxy boundary
 
