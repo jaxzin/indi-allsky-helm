@@ -150,4 +150,121 @@ jobs:
               -skip NodeFeatureRule
           done
 
-  # e2e job (kind + INDI simulator smoke test) is added in Task A9 (#8).
+  # --- end-to-end release gate (Task A9, #8) ---------------------------------
+  #
+  # Two kind clusters rather than one, split by what each set of scenarios
+  # needs from the CLUSTER rather than by subject matter:
+  #
+  #   e2e-pipeline — three nodes and a NetworkPolicy-enforcing CNI. The
+  #     secure-default pipeline, runtime policy enforcement, and the
+  #     node-contract placement proof all need a multi-node cluster, and the
+  #     policy proofs additionally need a CNI that is not kindnet.
+  #   e2e-database — two nodes and kind's default CNI. The overlay barrier,
+  #     the advisory-lock overlap, the migration paths and the restore
+  #     procedure assert nothing about placement or dropped packets, so paying
+  #     for a third node and a Calico install would buy them nothing.
+  #
+  # They run in parallel. One combined job would serialize roughly fifty
+  # minutes of scenarios behind a single cluster and would make every failure
+  # cost a full re-run of everything before it.
+  e2e-pipeline:
+    runs-on: ubuntu-24.04
+    needs: lint
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # The SHA above pins the action, not helm — pin helm explicitly too.
+          version: v3.21.4
+
+      # `wait: 0s` is required, not a shortcut: this cluster disables the
+      # default CNI, so no node reaches Ready until e2e/install-cni.sh has
+      # applied Calico. Any non-zero wait here times out on a cluster that is
+      # behaving exactly as intended.
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.31.0
+          node_image: kindest/node:v1.34.3@sha256:08497ee19eace7b4b5348db5c6a1591d7752b164530a36f855cb0f2bdcbadd48
+          cluster_name: e2e-pipeline
+          config: e2e/kind-pipeline.yaml
+          wait: 0s
+
+      - name: Install and prove a NetworkPolicy-enforcing CNI
+        run: e2e/install-cni.sh
+
+      - name: Install the secure-default release
+        run: e2e/install-release.sh --wait
+
+      - name: Secure-default capture pipeline
+        run: e2e/verify-pipeline.sh
+
+      - name: NetworkPolicy runtime enforcement
+        run: e2e/verify-networkpolicy.sh
+
+      # The placement scenario installs a second release with its own database
+      # and web pod. Releasing the first one first keeps peak load on a
+      # four-core runner well inside what the capture pipeline needs, and keeps
+      # a resource-starvation failure from being misread as a scheduling one.
+      - name: Release the pipeline cluster for the placement scenario
+        run: |
+          kubectl --namespace allsky delete pod e2e-workbench --ignore-not-found --timeout=60s
+          helm uninstall allsky --namespace allsky --wait --timeout 5m
+          kubectl delete namespace allsky --timeout=5m
+
+      - name: Node-contract placement
+        run: e2e/verify-placement.sh
+
+      - name: Failure diagnostics
+        if: failure()
+        run: e2e/collect-diagnostics.sh
+
+  e2e-database:
+    runs-on: ubuntu-24.04
+    needs: lint
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.21.4
+
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.31.0
+          node_image: kindest/node:v1.34.3@sha256:08497ee19eace7b4b5348db5c6a1591d7752b164530a36f855cb0f2bdcbadd48
+          cluster_name: e2e-database
+          config: e2e/kind-database.yaml
+          wait: 120s
+
+      - name: Install the secure-default release
+        run: e2e/install-release.sh --wait
+
+      # The same headline proof as the other job, and a precondition rather
+      # than duplication: every scenario below needs a populated image
+      # catalogue, a seeded account and a released overlay barrier to start
+      # from, and needs to know it had them before it started breaking things.
+      - name: Baseline capture pipeline
+        run: e2e/verify-pipeline.sh
+
+      - name: Overlay barrier state matrix
+        run: e2e/verify-overlay-barrier.sh
+
+      - name: Advisory lock, both overlap orders
+        run: e2e/verify-db-maintenance.sh
+
+      - name: Migration paths (guarded autogenerate, escape hatch, committed revision)
+        run: e2e/verify-migration-paths.sh
+
+      - name: Backup and restore procedure
+        run: e2e/verify-restore.sh
+
+      - name: Failure diagnostics
+        if: failure()
+        run: e2e/collect-diagnostics.sh

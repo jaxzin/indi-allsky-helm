@@ -1,0 +1,87 @@
+# Base values for every kind end-to-end scenario.
+#
+# This file is deliberately the SECURE DEFAULT posture and nothing else:
+# edge.devices.mode stays `none`, sensors stay disabled, no node carries a
+# node-contract label, and no container is privileged or mounts a host path.
+# The full frame -> database -> PVC -> Service path has to work from here. The
+# opt-in hostPath posture lives in e2e/values-placement.yaml, which is a
+# separate release in a separate namespace precisely so that this one cannot
+# quietly acquire a device dependency.
+#
+# Two things are supplied at install time rather than tracked here:
+#
+#   * credentials — generated per run by e2e/install-release.sh into a
+#     mode-0600 values file. Tracked credential-shaped literals are avoided on
+#     the same reasoning as charts/indi-allsky/tests/db-maintenance-behavior.sh.
+#   * image digests — resolved from the `:main` tags immediately before install
+#     and set through image.digests.*, so the run records exactly which built
+#     bits it exercised. A mutable tag plus IfNotPresent would not.
+
+storage:
+  # kind's shipped local-path provisioner is ReadWriteOnce and node-local, so
+  # the chart's RWX default cannot be used here. That is not a workaround being
+  # papered over: the resulting PersistentVolume node affinity is what makes
+  # web, edge and the backup Job land on one node, which is exactly the
+  # single-node topology an operator without RWX storage would get.
+  data:
+    accessModes: [ReadWriteOnce]
+    size: 2Gi
+
+edge:
+  # Small enough that two releases fit on one GitHub-hosted runner, large
+  # enough that image processing is not the bottleneck. Requests and limits
+  # deliberately differ here (Burstable, not the Guaranteed QoS the chart's own
+  # defaults document) because a kind node is not a camera host.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+indiserver:
+  ccdDriver: indi_simulator_ccd
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+web:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+mariadb:
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 320Mi
+  backup:
+    # On in every scenario so the CronJob object exists. Its schedule is the
+    # chart default (04:20), which no CI run is alive long enough to reach:
+    # the scenarios that need a backup create a Job from the CronJob
+    # explicitly, which is also how an operator would take one on demand.
+    enabled: true
+
+# Seeding a local admin is part of the migration path, so the e2e exercises it
+# rather than leaving usertool.py's only in-cluster invocation untested. The
+# password arrives with the generated credentials.
+adminUser:
+  username: e2e-admin
+  name: E2E Admin
+  email: e2e-admin@example.com
+
+appConfig:
+  # A one-second maximum exposure on a five-second cadence: the simulator will
+  # have produced a processed frame well inside the pipeline scenario's wait
+  # budget, without pinning a runner core on image processing.
+  CCD_EXPOSURE_MAX: 1.0
+  EXPOSURE_PERIOD: 5.0
+  EXPOSURE_PERIOD_DAY: 5.0

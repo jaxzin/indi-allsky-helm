@@ -1,0 +1,17 @@
+# kind topology for the database scenarios: overlay barrier, advisory-lock
+# overlap, migration paths and restore.
+#
+# Two nodes rather than three, and kindnet rather than Calico. None of these
+# scenarios asserts anything about placement or about traffic being dropped, so
+# paying for a second worker and a CNI install would buy nothing; the chart's
+# NetworkPolicies are still rendered and are simply inert here, exactly as they
+# are on any cluster whose CNI does not enforce them.
+#
+# The second node is not decoration: kind taints the control plane NoSchedule,
+# so a one-node cluster would need that taint removed before anything schedules.
+# Adding a worker is the version-independent way to get a schedulable node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker

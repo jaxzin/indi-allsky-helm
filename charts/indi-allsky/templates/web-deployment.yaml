@@ -127,8 +127,18 @@ spec:
           what lets nginx serve them without mounting the application image or
           running from it. Trailing /. copies the directory's contents, so the
           alias in nginx.conf resolves without an extra path segment.
+
+          `-R`, deliberately NOT `-a`. Naming the source as `<dir>/.` makes cp
+          treat the destination directory itself as a copy target, so with
+          --preserve=all it also tries to stamp the SOURCE's timestamps onto
+          the destination — which here is a kubelet-created emptyDir mount
+          point owned by root. utimensat then fails EPERM for uid 10001 and cp
+          exits 1, every time, on every cluster. Found by the kind e2e (#8):
+          the container CrashLoopBackOff'd before nginx ever started. Nothing
+          downstream needs the source's ownership or mtimes; nginx needs the
+          bytes readable, which -R gives it.
           */}}
-          command: ["cp", "-a", "--", "{{ $staticSourcePath }}/.", "{{ $staticServePath }}/"]
+          command: ["cp", "-R", "--", "{{ $staticSourcePath }}/.", "{{ $staticServePath }}/"]
           securityContext:
             {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
           volumeMounts:

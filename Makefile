@@ -38,4 +38,6 @@ lint:
 	shellcheck images/*/*.sh
 	@echo "chart test shellcheck:"; ls -1 charts/indi-allsky/tests/*.sh
 	shellcheck charts/indi-allsky/tests/*.sh
+	@echo "e2e shellcheck:"; ls -1 e2e/*.sh
+	shellcheck e2e/*.sh
 	actionlint
