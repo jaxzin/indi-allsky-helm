@@ -114,10 +114,7 @@ k wait --for=condition=complete "job/${RESTORE_JOB}" --timeout "$JOB_COMPLETION_
 k logs "job/${RESTORE_JOB}" --container dump >"${SCRATCH_DIRECTORY}/backup-job.log"
 assert_no_credential_leak "${SCRATCH_DIRECTORY}/backup-job.log"
 
-ARTIFACT="$(workbench_sh '
-    find "$INDIALLSKY_BACKUP_DIR" -maxdepth 1 -type f -name "$1*.sql.gz" -printf "%T@ %p\n" \
-        | sort -rn | head -1 | cut -d" " -f2-
-' "$SCHEDULED_DUMP_PREFIX" | tr -d '\r\n')"
+ARTIFACT="$(newest_backup_artifact "$SCHEDULED_DUMP_PREFIX")"
 test -n "$ARTIFACT" || fail "the completed backup Job left no ${SCHEDULED_DUMP_PREFIX}_*.sql.gz artifact"
 note "recovery artifact: ${ARTIFACT}"
 

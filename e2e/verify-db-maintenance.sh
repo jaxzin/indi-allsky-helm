@@ -151,8 +151,12 @@ scheduled_after="$(backup_artifact_count "$SCHEDULED_DUMP_PREFIX")"
 test "$scheduled_after" -eq $((scheduled_before + 1)) \
     || fail "after the lock was released the scheduled backup produced ${scheduled_after} artifacts, expected $((scheduled_before + 1))"
 
-waiting_line="$(grep -n 'Still waiting for database maintenance advisory lock' "$order_one_log" | head -1 | cut -d: -f1)"
-published_line="$(grep -n 'Verified database dump published' "$order_one_log" | head -1 | cut -d: -f1)"
+# `|| true` on each: under pipefail a non-matching grep fails the whole
+# pipeline, and inside a command substitution that would end the script with
+# no diagnostic. The explicit emptiness checks below are the diagnostic.
+waiting_line="$(grep -n 'Still waiting for database maintenance advisory lock' "$order_one_log" | head -1 | cut -d: -f1 || true)"
+published_line="$(grep -n 'Verified database dump published' "$order_one_log" | head -1 | cut -d: -f1 || true)"
+test -n "$waiting_line" || fail "the scheduled backup Job never reported waiting for the lock"
 test -n "$published_line" || fail "the scheduled backup Job never reported publishing a verified dump"
 test "$waiting_line" -lt "$published_line" \
     || fail "the scheduled backup published before it reported waiting, so it did not wait for the lock"
@@ -239,10 +243,12 @@ pre_migrate_after="$(backup_artifact_count "$PRE_MIGRATE_DUMP_PREFIX")"
 test "$pre_migrate_after" -eq $((pre_migrate_before + 1)) \
     || fail "after acquiring the lock the migration published ${pre_migrate_after} pre-migration dumps, expected $((pre_migrate_before + 1))"
 
-waiting_line="$(grep -n 'Still waiting for database maintenance advisory lock' "$migrate_log" | head -1 | cut -d: -f1)"
-holding_line="$(grep -n 'Holding the database maintenance advisory lock' "$migrate_log" | head -1 | cut -d: -f1)"
-dump_line="$(grep -n 'Verified database dump published' "$migrate_log" | head -1 | cut -d: -f1)"
+waiting_line="$(grep -n 'Still waiting for database maintenance advisory lock' "$migrate_log" | head -1 | cut -d: -f1 || true)"
+holding_line="$(grep -n 'Holding the database maintenance advisory lock' "$migrate_log" | head -1 | cut -d: -f1 || true)"
+dump_line="$(grep -n 'Verified database dump published' "$migrate_log" | head -1 | cut -d: -f1 || true)"
+test -n "$waiting_line" || fail "the migration never reported waiting for the lock"
 test -n "$holding_line" || fail "the migration never reported acquiring the lock"
+test -n "$dump_line" || fail "the migration never reported publishing its pre-migration dump"
 test "$waiting_line" -lt "$holding_line" || fail "the migration's acquisition was logged before its wait"
 test "$holding_line" -lt "$dump_line" || fail "the migration published its dump before it held the lock"
 grep -Fq 'Migration and bootstrap complete' "$migrate_log" \

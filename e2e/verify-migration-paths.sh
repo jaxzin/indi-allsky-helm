@@ -98,8 +98,12 @@ column_exists() {  # $1 = table, $2 = column
     [ "${count:-0}" -gt 0 ]
 }
 
+# Line number of the first match, or the empty string. The `|| true` is
+# load-bearing: under pipefail a non-matching grep fails the whole pipeline, and
+# inside a command substitution that ends the script with no diagnostic at all.
+# require_order below is what turns "no match" into an actionable message.
 line_of() {  # $1 = pattern (extended regex), $2 = file -> line number or empty
-    grep -n -E -- "$1" "$2" | head -1 | cut -d: -f1
+    grep -n -E -- "$1" "$2" | head -1 | cut -d: -f1 || true
 }
 
 require_order() {  # $1 = file, $2 = earlier regex, $3 = later regex, $4 = description
@@ -244,9 +248,8 @@ upgrade_web_capturing_migrate_log "$existing_revision_log" --set migrations.preM
 
 grep -Fq 'Schema work is pending' "$existing_revision_log" \
     || fail "a database behind a committed revision was not reported as having pending work"
-require_order "$existing_revision_log" \
-    'Verified database dump published' "Running upgrade .*-> ?${SEEDED_REVISION_ID}" \
-    "the committed-revision upgrade gate"
+grep -Fq 'Verified database dump published' "$existing_revision_log" \
+    || fail "no pre-migration dump was published before an already-committed revision was applied — this is the exact regression the safety-property change exists to prevent"
 grep -Fq 'Schema matches models; no migration needed' "$existing_revision_log" \
     || fail "after applying the committed revision the schema still differed from the models, so this scenario cannot distinguish upgrade from autogenerate"
 if grep -Fq 'Model changes detected' "$existing_revision_log"; then
@@ -263,8 +266,27 @@ test "$applied_revision" = "$SEEDED_REVISION_ID" \
 probe_value="$(db_query "SELECT applied FROM \`${SEEDED_REVISION_VIEW}\`;" | tr -d '[:space:]')"
 test "$probe_value" = "1" \
     || fail "the seeded revision's own DDL did not run; ${SEEDED_REVISION_VIEW} returned '${probe_value}'"
+
+# The ordering proof, taken from the ARTIFACT rather than from a log line.
+# These images emit no alembic INFO logging — `flask db upgrade` runs silently —
+# so "the dump was published before the schema changed" cannot be read off the
+# migration output. It can be read off the dump: a recovery artifact taken
+# before the upgrade must still carry the OLD alembic revision and must not
+# mention the revision that was about to be applied. That is a stronger
+# statement than log ordering anyway, because it is about what an operator
+# would actually recover.
+published_dump="$(newest_backup_artifact "$PRE_MIGRATE_DUMP_PREFIX")"
+test -n "$published_dump" || fail "no pre-migration artifact is present to inspect"
+if ! backup_artifact_contains "$published_dump" "$head_revision"; then
+    fail "the pre-migration dump does not carry the pre-upgrade revision ${head_revision}, so it is not a recovery point for the state before this migration"
+fi
+if backup_artifact_contains "$published_dump" "$SEEDED_REVISION_ID"; then
+    fail "the pre-migration dump already contains ${SEEDED_REVISION_ID}, so it was taken AFTER the revision was applied — the safety property is inverted"
+fi
+note "recovery artifact ${published_dump} carries revision ${head_revision} and not ${SEEDED_REVISION_ID}"
+
 assert_no_credential_leak "$existing_revision_log"
-pass "the committed revision was dumped, then applied by upgrade, and its DDL really ran"
+pass "the committed revision was dumped first — provably, from the artifact — then applied, and its DDL really ran"
 
 # The view was only ever a witness. Dropping it keeps the logical dump the
 # restore scenario takes next free of a DEFINER-bearing object, while the

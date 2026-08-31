@@ -118,7 +118,7 @@ assert_state_blocks() {  # $1 = sentinel body, $2 = expected state word
             k logs "$(component_pod edge)" --container wait-for-overlay >&2 2>/dev/null || true
             fail "a '${expected}' sentinel did not hold the edge startup gate with a '${expected}' diagnostic"
         }
-    pass "a ${expected} sentinel keeps the edge initContainer blocking and names the state"
+    pass "the ${expected} sentinel state keeps the edge initContainer blocking and is named in its diagnostics"
 }
 
 

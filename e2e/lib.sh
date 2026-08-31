@@ -80,6 +80,21 @@ fail() {
     exit 1
 }
 
+# Every scenario runs under `set -Eeuo pipefail`, which means an unguarded
+# command failure ends the script with no message at all — the exact silent
+# failure these scripts exist to catch elsewhere. The ERR trap turns that into
+# a located, quoted diagnostic. `set -E` makes it inherited by functions,
+# subshells and command substitutions; errexit-exempt contexts (if, while, &&,
+# ||) do not trigger it, so a deliberate probe still reads as a probe.
+e2e_unhandled_failure() {
+    local status=$?
+    local source_file="${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}"
+    printf 'FAIL: %s line %s: unhandled command failure (status %d), no assertion reported it: %s\n' \
+        "${source_file##*/}" "${BASH_LINENO[0]:-unknown}" "$status" "$BASH_COMMAND" >&2
+    exit "$status"
+}
+trap e2e_unhandled_failure ERR
+
 pass() {
     printf 'PASS: %s\n' "$1"
 }
@@ -333,6 +348,26 @@ $script" _ "$@"
 backup_artifact_count() {  # $1 = filename prefix, e.g. pre-migrate
     workbench_sh 'find "$INDIALLSKY_BACKUP_DIR" -maxdepth 1 -type f -name "$1*.sql.gz" -print | wc -l' "$1" \
         | tr -d '[:space:]'
+}
+
+# Newest published artifact with the given prefix, or the empty string.
+# `sed -n 1s//p` rather than `head -1`: head closes the pipe after one line,
+# which SIGPIPEs sort, which pipefail then reports as a failure of the whole
+# pipeline. sed reads the stream to the end.
+newest_backup_artifact() {  # $1 = filename prefix
+    workbench_sh '
+        find "$INDIALLSKY_BACKUP_DIR" -maxdepth 1 -type f -name "$1*.sql.gz" -printf "%T@ %p\n" \
+            | sort -rn \
+            | sed -n "1s/^[^ ]* //p"
+    ' "$1" | tr -d '\r\n'
+}
+
+# True when one published dump's decompressed contents contain a fixed string.
+# For asserting WHAT a recovery artifact captured, not merely that it exists.
+# Plain `grep`, never `grep -q`: -q exits on the first match, SIGPIPEs gzip,
+# and pipefail then reports a successful search as a failed pipeline.
+backup_artifact_contains() {  # $1 = artifact path in the pod, $2 = fixed string
+    workbench_sh 'gzip -cd -- "$1" | grep -F -- "$2" >/dev/null' "$1" "$2"
 }
 
 
