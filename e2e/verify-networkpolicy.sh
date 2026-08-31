@@ -211,6 +211,23 @@ expect_status "indiserver :${INDISERVER_PORT} once the edge policy is restored" 
     "$STATUS_TIMED_OUT" "$UNLABELLED_PROBE" probe "$edge_pod_ip" "$INDISERVER_PORT"
 pass "the edge policy denies ingress to a port that is demonstrably open without it"
 
+# The other half of the same question, raised as a risk in issue #36: a
+# deny-all ingress policy could equally deny the KUBELET's TCP probes against
+# indiserver, which would show up as an edge pod that never becomes Ready
+# rather than as a security failure. It does not — the kubelet dials from the
+# node's own network namespace, which the CNI admits — and the proof is that
+# the container is Ready and has never been restarted while the policy that
+# just dropped an identical connection from a pod is in force.
+indiserver_ready="$(k get pod "$edge_pod" --output \
+    'jsonpath={.status.containerStatuses[?(@.name=="indiserver")].ready}')"
+indiserver_restarts="$(k get pod "$edge_pod" --output \
+    'jsonpath={.status.containerStatuses[?(@.name=="indiserver")].restartCount}')"
+test "$indiserver_ready" = "true" \
+    || fail "the indiserver container is not Ready under the edge deny-all policy; its TCP probes are being dropped along with pod traffic"
+test "${indiserver_restarts:-0}" -eq 0 \
+    || fail "the indiserver container has restarted ${indiserver_restarts} time(s) under the edge deny-all policy; its liveness probe is being dropped"
+pass "the kubelet's own TCP probes still reach indiserver: Ready, ${indiserver_restarts} restarts, under the same policy that drops pod traffic"
+
 
 section "Internal database: same-release clients only"
 
