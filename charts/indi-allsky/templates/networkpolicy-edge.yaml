@@ -1,0 +1,24 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "indi-allsky.edgeName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "edge") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- /*
+  No ingress rules at all: nothing in the cluster needs to connect TO the edge
+  pod. The daemon dials the database and the sidecar's indiserver on :7624 is
+  reached over the pod's own loopback, not across the pod network — even when
+  indiserver.mode is external, the daemon is the client. Egress is deliberately
+  unrestricted; see networkpolicy-web.yaml for why.
+  */}}
+  ingress: []
+{{- end }}

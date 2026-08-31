@@ -9,5 +9,19 @@ metadata:
   annotations:
     indi-allsky.io/overlay-checksum: {{ include "indi-allsky.overlayChecksum" . | quote }}
 data:
+  {{- /*
+  Two renderings of the same document, deliberately.
+
+  config-overlay.canonical.json is the byte-exact compact serialization the
+  checksum is taken over, and the only file the migration path reads. It is
+  emitted through toJson — not `quote`, which does not escape embedded quotes
+  and would produce broken YAML for any JSON payload.
+
+  config-overlay.json is the pretty sibling, for an operator reading
+  `kubectl get configmap -o yaml`. Nothing hashes it: re-serializing pretty
+  output would reintroduce exactly the formatting ambiguity the canonical form
+  exists to remove.
+  */}}
+  config-overlay.canonical.json: {{ $canonical | toJson }}
   config-overlay.json: |
     {{- $canonical | fromJson | toPrettyJson | nindent 4 }}

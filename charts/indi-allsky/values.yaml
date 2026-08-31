@@ -16,10 +16,30 @@ nodeContract:
   cameraLabel: indi-allsky.io/camera
   sensorsLabel: indi-allsky.io/sensors
 
+# Default-on, portable, ingress-only isolation. Only the nginx sidecar's :8080
+# is admitted on the web pod; the edge pod accepts no ingress; the internal
+# database admits 3306 from this release's web, edge and backup components
+# only. No egress policy is rendered — standard NetworkPolicy cannot portably
+# express the external database, OIDC, MQTT, upload or external-indiserver
+# destinations this chart supports, and a partial egress policy would break
+# them. See docs/configuration.md.
+networkPolicy:
+  enabled: true
+
 edge:
   priorityClass:
-    create: true
+    # create    — this release owns one cluster-scoped PriorityClass (name must
+    #             be empty; the chart generates a namespace/release/spec-safe one)
+    # reference — an external owner (IaC/CI, or one designated release) created
+    #             the class; set `name` and the chart renders no object
+    # disabled  — no PriorityClass object and no priorityClassName on the pod
+    mode: create
+    name: ""                      # required for reference, forbidden otherwise
     value: 1000000
+    # PreemptLowerPriority keeps the existing scheduling intent: capture
+    # outranks ordinary workloads on the camera node. Never evicts anything
+    # when set to Never.
+    preemptionPolicy: PreemptLowerPriority
   # Guaranteed QoS: set requests == limits (documented; not enforced)
   resources:
     requests:
@@ -30,12 +50,16 @@ edge:
       memory: 1Gi
   tolerations: []
   podAnnotations: {}       # e.g. Reloader annotations so credential rotation rolls the pod
-  # Optional absolute path for capture scratch files. Leave empty to use the
-  # image default; a later edge workload mounts an emptyDir here when set.
+  # Optional absolute path for capture scratch files. Empty keeps the image
+  # default. "/tmp" reuses the daemon container's existing emptyDir; any other
+  # absolute path gets a dedicated emptyDir mounted at exactly that path, and
+  # is rejected if it would overlap the rendered-config or data mounts.
   captureTmpDir: ""
   # gids granted in hostpath devices mode for /dev access (dialout, gpio, i2c on
-  # Raspberry Pi OS/Debian defaults) — adjust to your node OS's group ids
-  supplementalGroups: [20, 997, 998]
+  # Raspberry Pi OS/Debian defaults) — adjust to your node OS's group ids.
+  # Empty by default and rejected outside hostpath mode: group ids are node
+  # state, so a default here would be a guess about someone else's machine.
+  supplementalGroups: []
   # Optional capture-freshness liveness: restarts the pod when latest.jpg goes
   # stale (missing file counts as stale — deliberately fail-closed, so do NOT
   # enable before the first frame exists). OFF by default — long exposures,
@@ -45,14 +69,34 @@ edge:
     enabled: false
     maxAgeSeconds: 900
   sensors:
-    enabled: true          # adds sensorsLabel to nodeSelector; mounts sensor devices
+    # Off by default: enabling it requires a sensor access mechanism, and in
+    # hostpath mode also pins the pod to a node carrying nodeContract.sensorsLabel.
+    enabled: false
   devices:
-    mode: hostpath         # hostpath | device-plugin | none
+    # none          — simulator/no local hardware. Schedulable anywhere, no
+    #                 host devices, no privileged container. The default.
+    # device-plugin — preferred hardware path: a device plugin advertises an
+    #                 extended resource and the scheduler places the pod.
+    # hostpath      — explicit opt-in. Mounts host device paths and makes the
+    #                 indiserver sidecar privileged for a local camera.
+    mode: none
     camera:
-      hostPaths: ["/dev/bus/usb"]
+      # Structured entries only, never bare strings — the chart renders the
+      # readOnly you set and never infers access from a path:
+      #   - path: /dev/bus/usb
+      #     type: Directory        # Directory | CharDevice
+      #     readOnly: false
+      hostPaths: []
       resources: {}        # device-plugin mode, e.g. {squat.ai/asi-camera: 1}
     sensors:
-      hostPaths: ["/dev/i2c-1", "/dev/gpiochip0", "/sys/bus/w1"]
+      # Same structured shape. A one-wire sysfs tree is read-only:
+      #   - path: /dev/i2c-1
+      #     type: CharDevice
+      #     readOnly: false
+      #   - path: /sys/bus/w1
+      #     type: Directory
+      #     readOnly: true
+      hostPaths: []
       resources: {}
   darks:
     enabled: false         # runs darks.py instead of capture (maintenance mode)
@@ -141,9 +185,14 @@ credentials:
   # Required keys: INDIALLSKY_FLASK_SECRET_KEY, INDIALLSKY_FLASK_PASSWORD_KEY, MARIADB_PASSWORD.
   # Optional keys: INDIALLSKY_OIDC_CLIENT_ID, INDIALLSKY_OIDC_CLIENT_SECRET,
   #   INDIALLSKY_OIDC_DISCOVERY_ENDPOINT, INDIALLSKY_WEB_PASS.
-  # Mechanism: pods use envFrom [ConfigMap, Secret] in that order, so a key present in
-  # the Secret wins over / completes what the ConfigMap renders from plain values —
-  # OIDC client id and discovery endpoint may therefore live in either place.
+  # Mechanism: chart-owned non-secret settings arrive through the env ConfigMap's
+  # envFrom; the application Secret is NEVER consumed through a blanket envFrom.
+  # Each container declares an explicit secretKeyRef allowlist of exactly the
+  # keys it uses, so an opaque Secret cannot override chart-owned configuration
+  # and no container sees a credential it has no use for (the gunicorn container
+  # never receives INDIALLSKY_WEB_PASS; nginx and static-copy receive nothing).
+  # The optional keys are projected with optional: true, so OIDC client id and
+  # discovery endpoint may still live in either the ConfigMap or the Secret.
   existingSecret: ""
   flaskSecretKey: ""
   flaskPasswordKey: ""     # Fernet key — losing it makes stored app passwords unrecoverable

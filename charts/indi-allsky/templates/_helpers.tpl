@@ -109,6 +109,45 @@ app.kubernetes.io/component: {{ .component }}
 {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "db-backup" "maxLength" 52) }}
 {{- end }}
 
+{{- define "indi-allsky.webName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "web" "maxLength" 63) }}
+{{- end }}
+
+{{/* Services are DNS-1035: 63 characters and never digit-leading, hence alphaPrefix. */}}
+{{- define "indi-allsky.webServiceName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "web" "maxLength" 63 "alphaPrefix" "svc") }}
+{{- end }}
+
+{{- define "indi-allsky.nginxConfigMapName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "nginx" "maxLength" 63) }}
+{{- end }}
+
+{{- define "indi-allsky.edgeName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "edge" "maxLength" 63) }}
+{{- end }}
+
+{{/*
+Cluster-scoped PriorityClass identity. A generated name derived from release
+and chart alone collides across namespaces, so the hash input carries the
+namespace, the raw release/chart identity, and the spec this release intends
+(value plus preemption policy). Two releases that would render an identical
+class share the name; anything that differs gets its own object rather than
+silently adopting someone else's scheduling contract.
+*/}}
+{{- define "indi-allsky.priorityClassName" -}}
+{{- if eq .Values.edge.priorityClass.mode "reference" -}}
+{{- .Values.edge.priorityClass.name -}}
+{{- else -}}
+{{- $identity := printf "%s/%s/%d/%s"
+      .Release.Namespace
+      (include "indi-allsky.rawFullname" .)
+      (int .Values.edge.priorityClass.value)
+      .Values.edge.priorityClass.preemptionPolicy -}}
+{{- $prefix := include "indi-allsky.resourceName" (dict "ctx" . "suffix" "capture" "maxLength" 52) -}}
+{{- printf "%s-%s" $prefix (sha256sum $identity | trunc 10) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "indi-allsky.dbHost" -}}
 {{- if .Values.mariadb.enabled }}{{ include "indi-allsky.mariadbServiceName" . }}{{ else }}{{ required "externalDatabase.host is required when mariadb.enabled=false" .Values.externalDatabase.host }}{{ end }}
 {{- end }}
@@ -122,8 +161,31 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "indi-allsky.imagePath" -}}/var/www/html/allsky/images{{- end }}
 {{- define "indi-allsky.migrationPath" -}}/var/www/html/allsky/.state/migrations{{- end }}
 {{- define "indi-allsky.backupPath" -}}/var/www/html/.state/backups{{- end }}
-{{- define "indi-allsky.overlayPath" -}}/etc/indi-allsky-overlay/config-overlay.json{{- end }}
+{{- define "indi-allsky.overlayMountPath" -}}/etc/indi-allsky-overlay{{- end }}
+{{/*
+The checksum is taken over the canonical compact bytes, so the file the
+migration path reads and hashes must BE those bytes. The pretty sibling in the
+same ConfigMap is for operators reading `kubectl get cm`; hashing it would
+compare a pretty-printed rendering against a compact digest and never match.
+*/}}
+{{- define "indi-allsky.overlayPath" -}}/etc/indi-allsky-overlay/config-overlay.canonical.json{{- end }}
 {{- define "indi-allsky.overlaySentinelPath" -}}/var/www/html/.state/config-overlay.applied{{- end }}
+{{- define "indi-allsky.configPath" -}}/etc/indi-allsky{{- end }}
+
+{{/* Container ports. gunicorn's is loopback-only inside the web pod. */}}
+{{- define "indi-allsky.gunicornPort" -}}8000{{- end }}
+{{- define "indi-allsky.nginxPort" -}}8080{{- end }}
+{{- define "indi-allsky.indiserverPort" -}}7624{{- end }}
+
+{{/*
+Upstream serves its Flask blueprint under /indi-allsky and its static assets
+from the checkout at the path below. The static-copy init container copies that
+directory into an emptyDir so nginx can serve it without mounting the
+application image's filesystem.
+*/}}
+{{- define "indi-allsky.appUrlPrefix" -}}/indi-allsky{{- end }}
+{{- define "indi-allsky.staticSourcePath" -}}/home/allsky/indi-allsky/indi_allsky/flask/static{{- end }}
+{{- define "indi-allsky.staticServePath" -}}/usr/share/nginx/indi-allsky-static{{- end }}
 
 {{/* Canonical compact JSON is the sole checksum input and rollout identity. */}}
 {{- define "indi-allsky.overlayCanonicalJson" -}}
@@ -139,6 +201,116 @@ app.kubernetes.io/component: {{ .component }}
 
 {{- define "indi-allsky.overlayChecksum" -}}
 {{ include "indi-allsky.overlayCanonicalJson" . | sha256sum }}
+{{- end }}
+
+{{/*
+The restricted container securityContext every non-device container in this
+chart carries. One definition so "restricted" cannot mean two different things
+in two templates, and so a container that drops it is a visible deletion.
+usage: {{ include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+*/}}
+{{- define "indi-allsky.restrictedSecurityContext" -}}
+{{- $appUid := include "indi-allsky.appUid" . | int -}}
+runAsNonRoot: true
+runAsUser: {{ $appUid }}
+runAsGroup: {{ $appUid }}
+allowPrivilegeEscalation: false
+capabilities:
+  drop:
+    - ALL
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{/*
+Explicit per-container application-Secret allowlist. The application Secret is
+never consumed through a blanket envFrom: that would let an opaque Secret
+override chart-owned configuration and would hand every container every
+credential. Each caller names only the optional groups it actually uses.
+
+Optional keys are projected with optional: true because the chart cannot see
+inside credentials.existingSecret. A missing optional key leaves the variable
+unset, so a value the env ConfigMap already rendered still applies.
+
+usage: {{ include "indi-allsky.appSecretEnv" (dict "ctx" . "oidc" true "adminSeed" true) | nindent 12 }}
+*/}}
+{{- define "indi-allsky.appSecretEnv" -}}
+{{- $ctx := .ctx -}}
+{{- $secretName := include "indi-allsky.envSecretName" $ctx -}}
+- name: INDIALLSKY_FLASK_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_FLASK_SECRET_KEY
+- name: INDIALLSKY_FLASK_PASSWORD_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_FLASK_PASSWORD_KEY
+- name: MARIADB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: MARIADB_PASSWORD
+{{- if and .oidc $ctx.Values.oidc.enabled }}
+- name: INDIALLSKY_OIDC_CLIENT_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_OIDC_CLIENT_ID
+      optional: true
+- name: INDIALLSKY_OIDC_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_OIDC_CLIENT_SECRET
+      optional: true
+- name: INDIALLSKY_OIDC_DISCOVERY_ENDPOINT
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_OIDC_DISCOVERY_ENDPOINT
+      optional: true
+{{- end }}
+{{- if and .adminSeed $ctx.Values.adminUser.username }}
+- name: INDIALLSKY_WEB_PASS
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: INDIALLSKY_WEB_PASS
+      optional: true
+{{- end }}
+{{- end }}
+
+{{/*
+Merges device-plugin extended resources into a container's requests AND limits
+without replacing the base cpu/memory entries. Extended resources must appear
+in limits, and Kubernetes copies limits to requests only when requests are
+absent — this chart sets both explicitly so a base `requests` block cannot
+swallow the device request.
+usage: {{ include "indi-allsky.containerResources" (dict "base" .Values.edge.resources "devices" $deviceResources) | nindent 12 }}
+*/}}
+{{- define "indi-allsky.containerResources" -}}
+{{- $base := deepCopy (.base | default dict) -}}
+{{- $devices := .devices | default dict -}}
+{{- if $devices -}}
+  {{- $requests := mustMergeOverwrite (deepCopy (dig "requests" (dict) $base)) (deepCopy $devices) -}}
+  {{- $limits := mustMergeOverwrite (deepCopy (dig "limits" (dict) $base)) (deepCopy $devices) -}}
+  {{- $_ := set $base "requests" $requests -}}
+  {{- $_ := set $base "limits" $limits -}}
+{{- end -}}
+{{- if $base -}}
+{{- toYaml $base -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Deterministic volume name for one hostPath entry. Derived from the path so two
+entries can never collide and the same path always renders the same name.
+usage: {{ include "indi-allsky.hostPathVolumeName" (dict "role" "camera" "index" $index) }}
+*/}}
+{{- define "indi-allsky.hostPathVolumeName" -}}
+{{- printf "%s-device-%d" .role (int .index) -}}
 {{- end }}
 
 {{/* usage: {{ include "indi-allsky.image" (dict "ctx" . "name" "daemon") }} —

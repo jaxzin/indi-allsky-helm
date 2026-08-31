@@ -1,0 +1,321 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- $appUid := include "indi-allsky.appUid" . | int -}}
+{{- $dataMountPath := include "indi-allsky.dataMountPath" . -}}
+{{- $appDataPath := include "indi-allsky.appDataPath" . -}}
+{{- $imagePath := include "indi-allsky.imagePath" . -}}
+{{- $configPath := include "indi-allsky.configPath" . -}}
+{{- $overlayMountPath := include "indi-allsky.overlayMountPath" . -}}
+{{- $sentinelPath := include "indi-allsky.overlaySentinelPath" . -}}
+{{- $indiserverPort := include "indi-allsky.indiserverPort" . | int -}}
+{{- $envConfigMap := include "indi-allsky.envConfigMapName" . -}}
+{{- /* Sub-paths of the shared claim, so each container sees only its own area. */ -}}
+{{- $appDataSubPath := trimPrefix (printf "%s/" $dataMountPath) $appDataPath -}}
+{{- $stateMountPath := dir $sentinelPath | trimSuffix "/" -}}
+{{- $stateSubPath := trimPrefix (printf "%s/" $dataMountPath) $stateMountPath -}}
+{{- $scratchMountPath := "/tmp" -}}
+{{- /*
+Mode decisions, resolved once so every consumer below reads the same answer.
+
+Only a LOCAL hostPath camera creates a node requirement or a privileged
+container. Device-plugin mode lets the scheduler place the pod from the
+extended resource, and simulator/none and external-indiserver modes need
+neither a label nor a device.
+*/ -}}
+{{- $sidecarIndiserver := eq .Values.indiserver.mode "sidecar" -}}
+{{- $hostPathDevices := eq .Values.edge.devices.mode "hostpath" -}}
+{{- $devicePluginDevices := eq .Values.edge.devices.mode "device-plugin" -}}
+{{- $localHostPathCamera := and $sidecarIndiserver $hostPathDevices (gt (len .Values.edge.devices.camera.hostPaths) 0) -}}
+{{- $hostPathSensors := and .Values.edge.sensors.enabled $hostPathDevices -}}
+{{- $devicePluginSensors := and .Values.edge.sensors.enabled $devicePluginDevices -}}
+{{- $cameraDeviceResources := ternary .Values.edge.devices.camera.resources (dict) (and $sidecarIndiserver $devicePluginDevices) -}}
+{{- $sensorDeviceResources := ternary .Values.edge.devices.sensors.resources (dict) $devicePluginSensors -}}
+{{- /* An extra emptyDir is only needed when the scratch path is neither the
+       image default nor the /tmp emptyDir the daemon already has. */ -}}
+{{- $captureTmpDir := .Values.edge.captureTmpDir -}}
+{{- $dedicatedCaptureTmpDir := and $captureTmpDir (ne $captureTmpDir $scratchMountPath) -}}
+{{- /* Fixed probe timing; #6 rules out adding public probe-timing values. */ -}}
+{{- $terminationGracePeriodSeconds := 60 -}}
+{{- $indiserverStartupPeriodSeconds := 5 -}}
+{{- $indiserverStartupFailureThreshold := 24 -}}
+{{- $indiserverReadinessPeriodSeconds := 10 -}}
+{{- $indiserverReadinessFailureThreshold := 3 -}}
+{{- $indiserverLivenessPeriodSeconds := 20 -}}
+{{- $indiserverLivenessFailureThreshold := 6 -}}
+{{- $freshnessPeriodSeconds := 60 -}}
+{{- $freshnessFailureThreshold := 3 -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "indi-allsky.edgeName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  {{- /*
+  One replica, Recreate. Two capture daemons would drive the same camera and
+  write the same image folder, and in hostPath mode a surge replica could not
+  even schedule — the device is attached to one node.
+  */}}
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "edge") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "edge") | nindent 8 }}
+      annotations:
+        checksum/env-configmap: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
+        checksum/overlay-configmap: {{ include "indi-allsky.overlayChecksum" . }}
+        {{- with .Values.edge.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
+      {{- if ne .Values.edge.priorityClass.mode "disabled" }}
+      priorityClassName: {{ include "indi-allsky.priorityClassName" . }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $appUid }}
+        runAsGroup: {{ $appUid }}
+        fsGroup: {{ $appUid }}
+        fsGroupChangePolicy: OnRootMismatch
+        {{- if and $hostPathDevices .Values.edge.supplementalGroups }}
+        {{- /* Only in hostPath mode: these gids exist to open host device nodes
+               and grant nothing otherwise. _validate.tpl rejects them in the
+               other modes rather than letting them sit there looking load-bearing. */}}
+        supplementalGroups:
+          {{- range .Values.edge.supplementalGroups }}
+          - {{ . | int }}
+          {{- end }}
+        {{- end }}
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or $localHostPathCamera $hostPathSensors }}
+      nodeSelector:
+        {{- if $localHostPathCamera }}
+        {{ .Values.nodeContract.cameraLabel }}: "true"
+        {{- end }}
+        {{- if $hostPathSensors }}
+        {{ .Values.nodeContract.sensorsLabel }}: "true"
+        {{- end }}
+      {{- end }}
+      {{- with .Values.edge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: wait-for-overlay
+          image: {{ include "indi-allsky.image" (dict "ctx" . "name" "daemon") | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/home/allsky/wait-overlay.sh"]
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          {{- /*
+          Two ConfigMap keys, not the whole env ConfigMap and no Secret at all.
+          This container compares two strings; it has no use for a database
+          password, and giving it one would widen the blast radius of a startup
+          gate for nothing.
+          */}}
+          env:
+            - name: INDIALLSKY_CONFIG_OVERLAY_SHA256
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $envConfigMap }}
+                  key: INDIALLSKY_CONFIG_OVERLAY_SHA256
+            - name: INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $envConfigMap }}
+                  key: INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+          volumeMounts:
+            {{- /*
+            Read-only, and narrowed to the .state sibling that holds the
+            sentinel. A per-file subPath is not an option: kubelet materializes
+            a missing subPath as a DIRECTORY, which would turn the sentinel
+            path into one before the web pod ever wrote it.
+            */}}
+            - name: data
+              mountPath: {{ $stateMountPath }}
+              subPath: {{ $stateSubPath }}
+              readOnly: true
+      containers:
+        - name: daemon
+          image: {{ include "indi-allsky.image" (dict "ctx" . "name" "daemon") | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- /*
+          Always restricted, in every device mode including hostPath sensors.
+          The daemon is an ordinary Python process; the devices are attached to
+          the indiserver sidecar, and sensor hostPaths are reached through
+          supplementalGroups rather than through privilege. The Global
+          Constraint's device-container exemption does not extend to it by
+          adjacency.
+          */}}
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $envConfigMap }}
+          env:
+            {{- /* Database and Flask keys only. No OIDC client secret — the
+                   daemon serves no HTTP — and no admin bootstrap password. */}}
+            {{- include "indi-allsky.appSecretEnv" (dict "ctx" . "oidc" false "adminSeed" false) | nindent 12 }}
+          {{- if .Values.edge.freshnessProbe.enabled }}
+          {{- /*
+          Opt-in, fail-closed capture-freshness liveness: a missing latest image
+          counts as stale, so this must not be enabled before the first frame
+          exists. The extension follows the configured IMAGE_FILE_TYPE, so the
+          probe matches latest.* rather than assuming .jpg.
+          */}}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - >-
+                  newest="$(find {{ $imagePath }} -maxdepth 1 -type f -name 'latest.*' -printf '%T@\n' 2>/dev/null | sort -rn | head -1)";
+                  [ -n "$newest" ] || exit 1;
+                  [ $(( $(date +%s) - ${newest%.*} )) -lt {{ .Values.edge.freshnessProbe.maxAgeSeconds | int }} ]
+            periodSeconds: {{ $freshnessPeriodSeconds }}
+            failureThreshold: {{ $freshnessFailureThreshold }}
+          {{- end }}
+          {{- $daemonResources := include "indi-allsky.containerResources" (dict "base" .Values.edge.resources "devices" $sensorDeviceResources) }}
+          {{- with $daemonResources }}
+          resources:
+            {{- . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ $configPath }}
+            {{- /* The application subtree only. The .state sibling holding the
+                   database dumps and the Alembic tree is not mounted here. */}}
+            - name: data
+              mountPath: {{ $appDataPath }}
+              subPath: {{ $appDataSubPath }}
+            - name: scratch
+              mountPath: {{ $scratchMountPath }}
+            {{- if $dedicatedCaptureTmpDir }}
+            - name: capture-scratch
+              mountPath: {{ $captureTmpDir }}
+            {{- end }}
+            {{- if $hostPathSensors }}
+            {{- range $index, $entry := .Values.edge.devices.sensors.hostPaths }}
+            - name: {{ include "indi-allsky.hostPathVolumeName" (dict "role" "sensor" "index" $index) }}
+              mountPath: {{ $entry.path }}
+              readOnly: {{ $entry.readOnly }}
+            {{- end }}
+            {{- end }}
+        {{- if $sidecarIndiserver }}
+        - name: indiserver
+          image: {{ include "indi-allsky.image" (dict "ctx" . "name" "indiserver") | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if $localHostPathCamera }}
+          {{- /*
+          The one privileged container in this chart, and only for a LOCAL
+          hostPath camera. INDI's USB drivers rebind and reconfigure the device
+          node directly, which no capability set short of privileged reliably
+          covers across the vendor drivers upstream ships. Device-plugin mode
+          and simulator mode get the restricted context below instead — that is
+          why device-plugin is the documented preferred hardware path.
+
+          Privileged, but still NOT root: the pod's runAsNonRoot/runAsUser 10001
+          is deliberately left in place. Privileged already grants
+          CAP_DAC_OVERRIDE, so the device node's ownership stops mattering, and
+          dropping to uid 0 as well would buy nothing while breaking the "no
+          container in this chart runs as root" property outright.
+          */}}
+          securityContext:
+            privileged: true
+          {{- else }}
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          {{- end }}
+          {{- /* No application Secret and no data volume: this container runs
+                 INDI drivers and speaks the INDI protocol on loopback-adjacent
+                 pod networking. It has no database and no filesystem role. */}}
+          env:
+            - name: INDIALLSKY_INDI_CCD_DRIVER
+              value: {{ .Values.indiserver.ccdDriver | quote }}
+            {{- with .Values.indiserver.gpsDriver }}
+            - name: INDIALLSKY_INDI_GPS_DRIVER
+              value: {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: indi
+              containerPort: {{ $indiserverPort }}
+              protocol: TCP
+          {{- /*
+          TCP probes only. indiserver answers the INDI protocol, not HTTP, and
+          a driver that has stopped responding still holds the listener open —
+          so this proves the process is up, not that the camera is healthy.
+          Capture health is the daemon's opt-in freshness probe.
+          */}}
+          startupProbe:
+            tcpSocket:
+              port: indi
+            periodSeconds: {{ $indiserverStartupPeriodSeconds }}
+            failureThreshold: {{ $indiserverStartupFailureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: indi
+            periodSeconds: {{ $indiserverReadinessPeriodSeconds }}
+            failureThreshold: {{ $indiserverReadinessFailureThreshold }}
+          livenessProbe:
+            tcpSocket:
+              port: indi
+            periodSeconds: {{ $indiserverLivenessPeriodSeconds }}
+            failureThreshold: {{ $indiserverLivenessFailureThreshold }}
+          {{- $indiserverResources := include "indi-allsky.containerResources" (dict "base" .Values.indiserver.resources "devices" $cameraDeviceResources) }}
+          {{- with $indiserverResources }}
+          resources:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- if $localHostPathCamera }}
+          volumeMounts:
+            {{- range $index, $entry := .Values.edge.devices.camera.hostPaths }}
+            - name: {{ include "indi-allsky.hostPathVolumeName" (dict "role" "camera" "index" $index) }}
+              mountPath: {{ $entry.path }}
+              readOnly: {{ $entry.readOnly }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.dataPvcName" . }}
+        - name: config
+          emptyDir:
+            {{- /* Same answer as the web pod: the rendered flask.json carries
+                   SECRET_KEY, PASSWORD_KEY and the database DSN, and the edge
+                   node is the more physically exposed of the two. */}}
+            medium: Memory
+        - name: scratch
+          emptyDir: {}
+        {{- if $dedicatedCaptureTmpDir }}
+        - name: capture-scratch
+          emptyDir: {}
+        {{- end }}
+        {{- if $localHostPathCamera }}
+        {{- range $index, $entry := .Values.edge.devices.camera.hostPaths }}
+        - name: {{ include "indi-allsky.hostPathVolumeName" (dict "role" "camera" "index" $index) }}
+          hostPath:
+            path: {{ $entry.path }}
+            type: {{ $entry.type }}
+        {{- end }}
+        {{- end }}
+        {{- if $hostPathSensors }}
+        {{- range $index, $entry := .Values.edge.devices.sensors.hostPaths }}
+        - name: {{ include "indi-allsky.hostPathVolumeName" (dict "role" "sensor" "index" $index) }}
+          hostPath:
+            path: {{ $entry.path }}
+            type: {{ $entry.type }}
+        {{- end }}
+        {{- end }}

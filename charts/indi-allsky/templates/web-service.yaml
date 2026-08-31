@@ -1,0 +1,23 @@
+{{- include "indi-allsky.validateValues" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "indi-allsky.webServiceName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port | int }}
+      {{- /*
+      The named nginx port, never gunicorn's. gunicorn binds loopback, so a
+      Service pointing at 8000 would have no endpoints at all — and if that
+      bind ever regressed, this Service would be the thing that exposed an
+      X-Forwarded-For-trusting application directly to the cluster.
+      */}}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}

@@ -1,0 +1,43 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- /*
+Off by default. The chart cannot know an operator's ingress controller, host
+name, or certificate story, and a default-on Ingress would publish the web UI
+the moment the chart is installed.
+
+Single host by design: the nginx sidecar terminates one site and the
+application builds its URLs from the Host header it receives. Multi-host or
+path-rewriting topologies belong in front of this Service, not in this
+template.
+*/ -}}
+{{- if .Values.web.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "indi-allsky.webName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  {{- with .Values.web.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.web.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.web.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.web.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "indi-allsky.webServiceName" . }}
+                port:
+                  name: http
+{{- end }}
