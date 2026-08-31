@@ -29,9 +29,10 @@ spec:
         Same namespace (a podSelector with no namespaceSelector never crosses
         one) and same release, narrowed to the one component that is an MQTT
         client: the edge pod, where upstream's daemon, capture and uploader
-        processes live. Not a list like the database policy's, because the web
-        pod only renders the MQTT settings in its configuration form and never
-        opens a connection.
+        processes live. Not a list like the database policy's: the web pod
+        renders the MQTT settings in its configuration form and imports paho
+        only to report the library's version on its system-info page — it
+        never constructs a client or opens a connection.
 
         Legitimate consumers this chart cannot select — Home Assistant, a
         dashboard, the remote-sensor and remote-libcamera helpers upstream
