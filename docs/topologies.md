@@ -9,27 +9,29 @@ plugged into; the web UI, the database and the optional broker are ordinary
 cluster workloads that land wherever the scheduler puts them.
 
 ```
-  camera node (indi-allsky.io/camera)          anywhere in the cluster
-  ┌──────────────────────────────────┐     ┌──────────────────────────────┐
-  │ edge pod                         │     │ web pod                      │
-  │   indiserver ──▶ /dev/bus/usb    │     │   gunicorn ◀── nginx :8080   │
-  │        ▲                         │     └───────┬──────────▲───────────┘
-  │        │ :7624 (pod loopback)    │             │          │
-  │   daemon ──▶ /dev/i2c, gpiochip  │             │          │
-  └────┬─────────────────┬───────────┘             │          │
-       │                 │                         │          │
-       │ writes          │ :3306                   │ :3306    │ reads
-       ▼                 ▼                         ▼          │
-  ┌──────────────────────────────────────────────────┐        │
-  │ shared data PVC (RWX)                            │────────┘
-  │   /var/www/html/allsky   images, timelapses      │
-  │   /var/www/html/.state   dumps, alembic history  │
-  └──────────────────────────────────────────────────┘
-  ┌──────────────────────────┐   ┌────────────────────────────┐
-  │ mariadb (StatefulSet)    │   │ mosquitto (optional)       │
-  │   or externalDatabase.*  │   │   :1883, edge pod only     │
-  └──────────────────────────┘   └────────────────────────────┘
+  camera node (indi-allsky.io/camera)      anywhere in the cluster
+  ┌──────────────────────────────────┐     ┌─────────────────────────────┐
+  │ edge pod        pinned by label  │     │ web pod              floats │
+  │                                  │     │                             │
+  │  indiserver ──▶ camera device    │     │  nginx :8080  ──▶ gunicorn  │
+  │      ▲                           │     │  (the Service target)       │
+  │      │ :7624, pod loopback       │     │                             │
+  │  daemon ──▶ i2c / gpio / 1-wire  │     │                             │
+  └──────────────┬───────────────────┘     └───────────────┬─────────────┘
+                 │                                         │
+      read-write │      ┌────────────────────────┐         │ read-only
+                 ├─────▶│ shared data PVC  (RWX) │◀────────┤
+                 │      │  allsky/  images       │         │
+                 │      │  .state/  dumps, tree  │         │
+                 │      └────────────────────────┘         │
+                 │      ┌────────────────────────┐         │
+                 └─────▶│ mariadb :3306          │◀────────┘
+                        │  or externalDatabase.* │
+                        └────────────────────────┘
 ```
+
+The optional mosquitto broker sits alongside on `:1883`, reachable from the
+edge pod and nothing else.
 
 Two things follow from that picture, and both bite in practice:
 
