@@ -307,13 +307,34 @@ tests:
       - notExists: {path: 'spec.template.spec.containers[?(@.name=="nginx")].env'}
       - notExists: {path: 'spec.template.spec.containers[?(@.name=="nginx")].envFrom'}
 
-  # The MariaDB root Secret is a separate recovery credential and reaches the
-  # database container only.
-  - it: never references the MariaDB root Secret from any web container
+  # The MariaDB root Secret is a separate recovery credential that reaches the
+  # database container only. Pinning the exact volume set is what makes that
+  # testable structurally: any extra Secret volume — root credentials or
+  # otherwise — changes the count. render-validation-matrix.sh additionally
+  # greps the whole rendered release for the root Secret's name.
+  - it: mounts exactly the volumes the web pod needs and no Secret volume
     template: web-deployment.yaml
     asserts:
-      - notMatchRegexRaw: {pattern: mariadb-root}
-      - notMatchRegexRaw: {pattern: MARIADB_ROOT_PASSWORD}
+      - lengthEqual: {path: spec.template.spec.volumes, count: 6}
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: data
+            persistentVolumeClaim:
+              claimName: test-release-indi-allsky-data
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: nginx-config
+            configMap:
+              name: test-release-indi-allsky-nginx
+      - contains:
+          path: spec.template.spec.volumes
+          content: {name: static, emptyDir: {}}
+      - contains:
+          path: spec.template.spec.volumes
+          content: {name: nginx-scratch, emptyDir: {}}
+      - notExists: {path: 'spec.template.spec.volumes[?(@.secret)]'}
 
   - it: resolves an existing application Secret in every allowlist
     template: web-deployment.yaml

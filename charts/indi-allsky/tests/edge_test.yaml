@@ -204,8 +204,7 @@ tests:
           path: 'spec.template.spec.containers[?(@.name=="daemon")].envFrom'
           content: {secretRef: {name: test-release-indi-allsky-env}}
           any: true
-      - notMatchRegexRaw: {pattern: mariadb-root}
-      - notMatchRegexRaw: {pattern: MARIADB_ROOT_PASSWORD}
+      - notExists: {path: 'spec.template.spec.volumes[?(@.secret)]'}
 
   # Device mode: hostpath
   - it: pins to the camera node and privileges only indiserver for a local camera
@@ -376,7 +375,6 @@ tests:
       - lengthEqual: {path: spec.template.spec.containers, count: 1}
       - equal: {path: "spec.template.spec.containers[0].name", value: daemon}
       - notExists: {path: spec.template.spec.nodeSelector}
-      - notMatchRegexRaw: {pattern: 'indi-allsky-indiserver'}
 
   - it: keeps independently enabled sensors working with an external INDI server
     template: edge-deployment.yaml
@@ -461,6 +459,7 @@ tests:
   - it: adds no scratch volume when the image default is kept
     template: edge-deployment.yaml
     asserts:
+      - lengthEqual: {path: spec.template.spec.volumes, count: 3}
       - notExists:
           path: 'spec.template.spec.volumes[?(@.name=="capture-scratch")]'
       - contains:

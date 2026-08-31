@@ -1,0 +1,57 @@
+# CI-only fixture for the explicit hostPath opt-in, which the default secure
+# values deliberately do not exercise: host device volumes, the privileged
+# indiserver sidecar, supplemental groups, camera/sensor node selectors, an
+# externally owned PriorityClass, and an enabled Ingress with TLS. All
+# credentials are throwaway render fixtures; this directory is excluded from
+# packaged charts by .helmignore.
+credentials:
+  flaskSecretKey: ci-dummy
+  flaskPasswordKey: ci-dummy
+  mariadbPassword: ci-dummy
+mariadb:
+  rootCredentials:
+    password: ci-root-dummy
+edge:
+  priorityClass:
+    mode: reference
+    name: ci-platform-owned-capture
+  supplementalGroups: [20, 997, 998]
+  captureTmpDir: /var/tmp/indi-allsky-capture
+  freshnessProbe:
+    enabled: true
+    maxAgeSeconds: 900
+  tolerations:
+    - key: indi-allsky.io/camera
+      operator: Exists
+      effect: NoSchedule
+  sensors:
+    enabled: true
+  devices:
+    mode: hostpath
+    camera:
+      hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    sensors:
+      hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+        - path: /dev/gpiochip0
+          type: CharDevice
+          readOnly: false
+        # The one-wire sysfs tree only needs to be read.
+        - path: /sys/bus/w1
+          type: Directory
+          readOnly: true
+web:
+  ingress:
+    enabled: true
+    className: nginx
+    host: allsky.ci.example.com
+    annotations:
+      cert-manager.io/cluster-issuer: ci-issuer
+    tls:
+      - hosts: [allsky.ci.example.com]
+        secretName: ci-allsky-tls

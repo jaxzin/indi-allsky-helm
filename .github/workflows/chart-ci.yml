@@ -74,8 +74,19 @@ jobs:
       - name: helm unittest
         run: helm unittest charts/indi-allsky
 
+      # Negative control: proves the suites above would notice if the chart
+      # stopped honouring a contract, rather than only that they pass today.
+      - name: Unit-test mutation controls
+        run: charts/indi-allsky/tests/mutation-controls.sh
+
       - name: Disposable MariaDB and backup behavior
         run: charts/indi-allsky/tests/mariadb-behavior.sh
+
+      # The advisory lock and the atomic dump publication are behaviour, not
+      # manifest content: this exercises the shipped scripts against a real
+      # MariaDB, in both overlap orders.
+      - name: Database maintenance serialization and dump safety
+        run: charts/indi-allsky/tests/db-maintenance-behavior.sh
 
       - uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
 
@@ -91,7 +102,9 @@ jobs:
           for values_file in \
             charts/indi-allsky/ci/ci-values.yaml \
             charts/indi-allsky/ci/backup-values.yaml \
-            charts/indi-allsky/ci/external-values.yaml; do
+            charts/indi-allsky/ci/external-values.yaml \
+            charts/indi-allsky/ci/edge-hostpath-values.yaml \
+            charts/indi-allsky/ci/edge-device-plugin-values.yaml; do
             mode="$(basename "$values_file" -values.yaml)"
             echo "Rendering ${mode} mode"
             helm template "ci-${mode}" charts/indi-allsky \

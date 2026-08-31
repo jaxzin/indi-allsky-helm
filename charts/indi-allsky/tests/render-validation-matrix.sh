@@ -242,6 +242,37 @@ expect_failure \
     "storage.data.storageClassName must be a valid DNS subdomain StorageClass name" \
     --set-string storage.data.storageClassName=$'storage.example\n---\nkind: Secret'
 
+# The MariaDB root Secret is a separate recovery credential. Unit tests assert
+# its absence structurally per workload; this proves the property over the
+# whole rendered release, where a future template could reintroduce it.
+root_secret_name="$(
+    yq eval-all 'select(.kind == "Secret" and (.metadata.name | test("-mariadb-root$"))) | .metadata.name' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+test -n "$root_secret_name"
+non_database_root_references="$(
+    yq eval-all 'select(.kind != "StatefulSet" and .kind != "Secret") | [.. | select(tag == "!!str") | select(test("mariadb-root|MARIADB_ROOT_PASSWORD"))] | length' \
+        "${SCRATCH_DIRECTORY}/internal.yaml" | awk '{ total += $1 } END { print total + 0 }'
+)"
+test "$non_database_root_references" -eq 0
+printf 'direct root-Secret isolation: %s referenced by no workload other than the database\n' \
+    "$root_secret_name"
+
+# Ingress-only NetworkPolicy posture over the whole release: nothing may render
+# an egress rule, because the chart supports external database, OIDC, MQTT and
+# upload destinations that standard NetworkPolicy cannot express portably.
+policy_egress_count="$(
+    yq eval-all '[select(.kind == "NetworkPolicy") | select(.spec.egress != null or (.spec.policyTypes | contains(["Egress"])))] | length' \
+        "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+policy_count="$(
+    yq eval-all '[select(.kind == "NetworkPolicy")] | length' "${SCRATCH_DIRECTORY}/internal.yaml"
+)"
+test "$policy_egress_count" -eq 0
+test "$policy_count" -eq 3
+printf 'direct network posture: %s ingress-only policies, 0 egress rules\n' "$policy_count"
+
+
 # --- A6/A7 workload guards ---------------------------------------------------
 
 expect_failure \

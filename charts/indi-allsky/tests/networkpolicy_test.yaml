@@ -33,7 +33,7 @@ tests:
       - lengthEqual: {path: spec.policyTypes, count: 1}
       - equal: {path: "spec.ingress[0].ports[0].port", value: 8080}
       - lengthEqual: {path: "spec.ingress[0].ports", count: 1}
-      - notMatchRegexRaw: {pattern: '8000'}
+      - lengthEqual: {path: spec.ingress, count: 1}
       # There is no `from`: NetworkPolicy selects pods, not containers, so a
       # same-pod sidecar selector cannot exist. Whatever fronts the Service —
       # an Ingress controller in another namespace, a LoadBalancer — reaches
@@ -43,10 +43,26 @@ tests:
   # A generic egress rule would break the external database, OIDC provider,
   # MQTT broker, upload targets and DNS, none of which standard NetworkPolicy
   # can express portably.
-  - it: renders no egress policy anywhere
+  - it: renders no egress policy on the web pod
+    template: networkpolicy-web.yaml
     asserts:
-      - notMatchRegexRaw: {pattern: 'policyTypes:(?s).*Egress'}
-      - notMatchRegexRaw: {pattern: '\negress:'}
+      - notExists: {path: spec.egress}
+      - lengthEqual: {path: spec.policyTypes, count: 1}
+      - notContains: {path: spec.policyTypes, content: Egress}
+
+  - it: renders no egress policy on the edge pod
+    template: networkpolicy-edge.yaml
+    asserts:
+      - notExists: {path: spec.egress}
+      - lengthEqual: {path: spec.policyTypes, count: 1}
+      - notContains: {path: spec.policyTypes, content: Egress}
+
+  - it: renders no egress policy on the database
+    template: networkpolicy-mariadb.yaml
+    asserts:
+      - notExists: {path: spec.egress}
+      - lengthEqual: {path: spec.policyTypes, count: 1}
+      - notContains: {path: spec.policyTypes, content: Egress}
 
   - it: admits no ingress at all to the edge pod
     template: networkpolicy-edge.yaml

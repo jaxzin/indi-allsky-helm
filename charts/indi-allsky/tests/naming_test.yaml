@@ -180,8 +180,10 @@ tests:
       name: shared
       namespace: observatory-a
     asserts:
-      - matchRegex: {path: metadata.name, pattern: '^shared-indi-allsky-capture-[0-9a-f]{10}$'}
-      - notMatchRegex:
-          path: metadata.name
-          # The digest a release of the same name in observatory-b renders.
-          pattern: '-6c59935a5b$'
+      # Pinned exactly, not by pattern: the digest is a security-relevant
+      # identity, so removing any of its inputs — namespace, release, value,
+      # preemption policy — must be an explicit test change rather than a
+      # silent one. The second assertion is the namespace's contribution: a
+      # release of the same name in observatory-b renders -6c59935a5b.
+      - equal: {path: metadata.name, value: shared-indi-allsky-capture-eb937af24f}
+      - notMatchRegex: {path: metadata.name, pattern: '-6c59935a5b$'}
