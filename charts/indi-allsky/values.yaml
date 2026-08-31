@@ -244,17 +244,26 @@ externalDatabase:
   charset: utf8mb4
   collation: utf8mb4_unicode_ci
 
+# Optional in-cluster MQTT broker for upstream's MQTTPUBLISH and its
+# remote-sensor helpers. Deliberately unauthenticated in v1 (the image's own
+# /mosquitto-no-auth.conf): the chart's NetworkPolicy is its access control, and
+# an operator who needs credentials or TLS brings their own broker. See
+# docs/topologies.md.
 mosquitto:
   enabled: false
   image: eclipse-mosquitto:2.0
+  nodeSelector: {}
   resources: {}
 
 timezone: UTC
 
 discovery:
   nfd:
-    # Requires Node Feature Discovery installed in the cluster. NFD's usb source
-    # only reports device classes in its deviceClassWhitelist — you may need to
-    # extend the NFD worker config for your camera. See docs/node-contract.md.
+    # Requires Node Feature Discovery installed in the cluster — the chart
+    # renders the NodeFeatureRule, not NFD itself. No NFD worker configuration
+    # is needed: the rule matches the raw usb.device feature set, which
+    # deviceClassWhitelist does not filter. See docs/topologies.md.
     enabled: false
+    # Lowercase 4-hex-digit sysfs idVendor values. Quote them: 1618 unquoted is
+    # a YAML integer, and the CRD requires strings.
     usbVendorIds: ["03c3", "1618"]   # ZWO, QHY — extend via values

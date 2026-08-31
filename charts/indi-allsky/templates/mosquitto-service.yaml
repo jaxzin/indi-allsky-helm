@@ -1,0 +1,19 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.mosquitto.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "indi-allsky.mosquittoServiceName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mosquitto
+spec:
+  type: ClusterIP
+  ports:
+    - name: mqtt
+      port: {{ include "indi-allsky.mosquittoPort" . | int }}
+      targetPort: mqtt
+      protocol: TCP
+  selector:
+    {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mosquitto") | nindent 4 }}
+{{- end }}

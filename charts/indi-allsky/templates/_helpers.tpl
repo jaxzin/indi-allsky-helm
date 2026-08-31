@@ -126,6 +126,35 @@ app.kubernetes.io/component: {{ .component }}
 {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "edge" "maxLength" 63) }}
 {{- end }}
 
+{{- define "indi-allsky.mosquittoName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "mosquitto" "maxLength" 63) }}
+{{- end }}
+
+{{/* Services are DNS-1035: 63 characters and never digit-leading, hence alphaPrefix. */}}
+{{- define "indi-allsky.mosquittoServiceName" -}}
+{{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "mosquitto" "maxLength" 63 "alphaPrefix" "svc") }}
+{{- end }}
+
+{{/*
+Cluster-scoped NodeFeatureRule identity, on the same reasoning as
+indi-allsky.priorityClassName: a NodeFeatureRule is CLUSTER-scoped while a Helm
+release is not, so a name derived from release and chart alone collides between
+two releases that share a release name in different namespaces — the ordinary
+case. The hash input carries the namespace and the raw release/chart identity,
+so every release gets its own object.
+
+Deliberately NOT the PriorityClass's share-when-identical behaviour: two
+releases rendering the same rule would still be two Helm releases claiming one
+cluster-scoped object, and the second install would fail on ownership. Two
+rules that both label a node indi-allsky.io/camera=true are harmless — NFD
+unions the labels from every rule that matches.
+*/}}
+{{- define "indi-allsky.nfdRuleName" -}}
+{{- $identity := printf "%s/%s" .Release.Namespace (include "indi-allsky.rawFullname" .) -}}
+{{- $prefix := include "indi-allsky.resourceName" (dict "ctx" . "suffix" "camera" "maxLength" 52) -}}
+{{- printf "%s-%s" $prefix (sha256sum $identity | trunc 10) -}}
+{{- end }}
+
 {{/*
 Cluster-scoped PriorityClass identity. A generated name derived from release
 and chart alone collides across namespaces, so the hash input carries the
@@ -156,6 +185,24 @@ silently adopting someone else's scheduling contract.
 {{- define "indi-allsky.appUid" -}}10001{{- end }}
 {{- define "indi-allsky.mariadbUid" -}}999{{- end }}
 {{- define "indi-allsky.mariadbPort" -}}3306{{- end }}
+{{/*
+The uid/gid eclipse-mosquitto establishes for itself (`mosquitto:x:1883:1883`
+in the image's /etc/passwd, and the owner of its whole /mosquitto tree). The
+image ships no USER directive, so without this the broker would run as root;
+the chart's own 10001 would be equally wrong, because nothing in the image is
+owned by it. Verified against the published eclipse-mosquitto:2.0 layers.
+*/}}
+{{- define "indi-allsky.mosquittoUid" -}}1883{{- end }}
+{{- define "indi-allsky.mosquittoPort" -}}1883{{- end }}
+{{/*
+The image's own unauthenticated config: `listener 1883` plus
+`allow_anonymous true`. Mosquitto 2.0's packaged default config
+(/mosquitto/config/mosquitto.conf) is entirely commented out, which means a
+local-only listener with anonymous access denied — unreachable from any other
+pod. v1 ships the broker without authentication (see docs/topologies.md), so
+this is the config that matches what the chart actually offers.
+*/}}
+{{- define "indi-allsky.mosquittoConfigPath" -}}/mosquitto-no-auth.conf{{- end }}
 {{- define "indi-allsky.dataMountPath" -}}/var/www/html{{- end }}
 {{- define "indi-allsky.appDataPath" -}}/var/www/html/allsky{{- end }}
 {{- define "indi-allsky.imagePath" -}}/var/www/html/allsky/images{{- end }}

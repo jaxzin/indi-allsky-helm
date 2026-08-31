@@ -1,0 +1,113 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.mosquitto.enabled -}}
+{{- $mosquittoUid := include "indi-allsky.mosquittoUid" . | int -}}
+{{- $mosquittoPort := include "indi-allsky.mosquittoPort" . | int -}}
+{{- /*
+Fixed probe timing, as named constants rather than public values — the numbers
+describe how this pod's own container comes up, and the chart deliberately
+exposes no probe-timing knobs anywhere. The broker binds its listener during
+startup and answers immediately afterwards, so it needs no startup budget of
+the kind gunicorn or MariaDB do.
+*/ -}}
+{{- $terminationGracePeriodSeconds := 30 -}}
+{{- $readinessPeriodSeconds := 10 -}}
+{{- $readinessFailureThreshold := 3 -}}
+{{- $livenessPeriodSeconds := 20 -}}
+{{- $livenessFailureThreshold := 6 -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "indi-allsky.mosquittoName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mosquitto
+spec:
+  {{- /*
+  One replica, and no public override. This is a pass-through broker for the
+  capture pipeline, not a clustered message store: two independent mosquitto
+  pods behind one Service would split subscribers across brokers that share no
+  state, so a subscriber could silently miss every message published to the
+  other. Recreate rather than RollingUpdate for the same reason — a surge
+  replica would be a second broker behind the same Service.
+  */}}
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mosquitto") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mosquitto") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
+      {{- /*
+      No fsGroup: the broker mounts no volume. /mosquitto-no-auth.conf enables
+      neither persistence nor file logging, so mosquitto writes nothing — no
+      data directory, no log file, no pid file — and needs no writable path.
+      */}}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $mosquittoUid }}
+        runAsGroup: {{ $mosquittoUid }}
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mosquitto.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mosquitto
+          image: {{ .Values.mosquitto.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- /*
+          command, not args: this replaces the image's ENTRYPOINT, whose only
+          job is to `chown -R mosquitto /mosquitto` when the container starts as
+          root. Running it under uid 1883 would make that a no-op with a
+          misleading name in the process tree; running the broker directly says
+          what this pod does.
+          */}}
+          command: ["/usr/sbin/mosquitto", "-c", {{ include "indi-allsky.mosquittoConfigPath" . | quote }}]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ $mosquittoUid }}
+            runAsGroup: {{ $mosquittoUid }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          {{- /* No envFrom and no env: the broker has no use for any
+                 application setting, and v1 gives it no credential. */}}
+          ports:
+            - name: mqtt
+              containerPort: {{ $mosquittoPort }}
+              protocol: TCP
+          {{- /*
+          TCP probes only. mosquitto speaks MQTT, not HTTP, and an anonymous
+          CONNECT would be the only deeper check available — which would prove
+          the same thing this does while adding a client to every probe cycle.
+          It proves the listener is up, not that any publisher is healthy.
+          */}}
+          readinessProbe:
+            tcpSocket:
+              port: mqtt
+            periodSeconds: {{ $readinessPeriodSeconds }}
+            failureThreshold: {{ $readinessFailureThreshold }}
+          livenessProbe:
+            tcpSocket:
+              port: mqtt
+            periodSeconds: {{ $livenessPeriodSeconds }}
+            failureThreshold: {{ $livenessFailureThreshold }}
+          {{- with .Values.mosquitto.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

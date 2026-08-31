@@ -1,0 +1,41 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.discovery.nfd.enabled -}}
+{{- /*
+Requires Node Feature Discovery to already be installed in the cluster: this
+renders the custom resource, not the CRD or the controller. NFD's own
+deployment is somebody else's chart, and a chart that shipped a CRD it does not
+own would fight whoever does.
+
+The rule matches the raw `usb.device` feature set, which nfd-worker discovers
+from every /sys/bus/usb/devices entry carrying an idProduct. That is NOT
+filtered by `sources.usb.deviceClassWhitelist` — the whitelist governs only
+NFD's own built-in `feature.node.kubernetes.io/usb-*.present` labels (verified
+against nfd-worker's source, v0.16 through v0.19: the whitelist is read in
+GetLabels, never in Discover). So no NFD worker configuration is needed for
+this rule to see an astro camera of any USB class.
+*/ -}}
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: {{ include "indi-allsky.nfdRuleName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: discovery
+spec:
+  rules:
+    - name: "indi-allsky usb astro camera"
+      labels:
+        {{- /* The key is quoted so a hostile or malformed nodeContract value
+               stays one YAML scalar and cannot open a sibling field. */}}
+        {{ .Values.nodeContract.cameraLabel | quote }}: "true"
+      matchFeatures:
+        - feature: usb.device
+          matchExpressions:
+            {{- /* Vendor ids are the lowercase 4-hex-digit sysfs idVendor
+                   strings; _validate.tpl rejects anything else, because the
+                   CRD requires strings here and an unquoted 1618 in values
+                   would render as an integer the API server refuses. */}}
+            vendor:
+              op: In
+              value: {{ .Values.discovery.nfd.usbVendorIds | toJson }}
+{{- end }}

@@ -206,4 +206,24 @@ expect_mutation_detected \
     templates/configmap-nginx.yaml \
     's|^            absolute_redirect off;$|            # absolute_redirect left at its default|'
 
+# --- optional broker and cluster-scoped discovery rule ------------------------
+
+expect_mutation_detected \
+    "broker policy widened to the whole namespace" \
+    "admits 1883 only from this release's edge pod" \
+    templates/networkpolicy-mosquitto.yaml \
+    's|- podSelector:|- namespaceSelector:|'
+
+expect_mutation_detected \
+    "broker handed the chart's application uid instead of the image's own" \
+    "runs as the image's own non-root mosquitto uid, not the chart's app uid" \
+    templates/_helpers.tpl \
+    's|^{{- define "indi-allsky.mosquittoUid" -}}1883{{- end }}$|{{- define "indi-allsky.mosquittoUid" -}}10001{{- end }}|'
+
+expect_mutation_detected \
+    "NodeFeatureRule identity stripped of namespace" \
+    "gives the NodeFeatureRule a different name in a different namespace" \
+    templates/_helpers.tpl \
+    's|printf "%s/%s" .Release.Namespace (include "indi-allsky.rawFullname" .)|printf "%s" (include "indi-allsky.rawFullname" .)|'
+
 printf 'mutation controls: %d contract mutations detected\n' "$case_number"

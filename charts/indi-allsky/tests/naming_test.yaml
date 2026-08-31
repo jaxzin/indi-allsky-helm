@@ -14,6 +14,8 @@ templates:
   - pvc-data.yaml
   - pvc-mariadb.yaml
   - priorityclass.yaml
+  - mosquitto-service.yaml
+  - nfd-rule.yaml
 tests:
   - it: prefixes a digit-leading Service name with a collision-resistant hash
     template: mariadb-service.yaml
@@ -187,3 +189,56 @@ tests:
       # release of the same name in observatory-b renders -6c59935a5b.
       - equal: {path: metadata.name, value: shared-indi-allsky-capture-eb937af24f}
       - notMatchRegex: {path: metadata.name, pattern: '-6c59935a5b$'}
+
+  # Services are DNS-1035 and may never lead with a digit, so the broker
+  # Service takes the same alphaPrefix normalization the others do.
+  - it: prefixes a digit-leading broker Service name
+    template: mosquitto-service.yaml
+    release:
+      name: 1foo
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - equal: {path: metadata.name, value: svc-1foo-indi-allsky-1850b708-mosquitto}
+      - matchRegex: {path: metadata.name, pattern: '^[a-z]([-a-z0-9]*[a-z0-9])?$'}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+
+  - it: preserves the broker suffix at the maximum Helm release length
+    template: mosquitto-service.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    set:
+      mosquitto.enabled: true
+    asserts:
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-mosquitto$'}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+
+  # A NodeFeatureRule is cluster-scoped, so it carries the same second hash the
+  # PriorityClass does. Unlike the PriorityClass the hash covers namespace and
+  # release identity only, never the rule's spec: two releases that would render
+  # an identical rule must still get two objects, because one cluster-scoped
+  # name cannot be owned by two Helm releases.
+  - it: keeps the NodeFeatureRule producer within the same naming contract
+    template: nfd-rule.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      - matchRegex: {path: metadata.name, pattern: '^a{36}-b8a8961a-camera-[0-9a-f]{10}$'}
+      - matchRegex: {path: metadata.name, pattern: '^.{1,253}$'}
+
+  - it: gives the NodeFeatureRule a different name in a different namespace
+    template: nfd-rule.yaml
+    release:
+      name: shared
+      namespace: observatory-a
+    set:
+      discovery.nfd.enabled: true
+    asserts:
+      # Pinned exactly, not by pattern, for the same reason as the
+      # PriorityClass above: dropping the namespace from the digest must be an
+      # explicit test change. A release of the same name in observatory-b
+      # renders -05665bf2b0.
+      - equal: {path: metadata.name, value: shared-indi-allsky-camera-1f6a4208c5}
+      - notMatchRegex: {path: metadata.name, pattern: '-05665bf2b0$'}

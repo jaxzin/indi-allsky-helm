@@ -12,9 +12,13 @@ readonly templates=(
   mariadb-backup-cronjob.yaml
   mariadb-service.yaml
   mariadb-statefulset.yaml
+  mosquitto-deployment.yaml
+  mosquitto-service.yaml
   networkpolicy-edge.yaml
   networkpolicy-mariadb.yaml
+  networkpolicy-mosquitto.yaml
   networkpolicy-web.yaml
+  nfd-rule.yaml
   priorityclass.yaml
   pvc-data.yaml
   pvc-mariadb.yaml
