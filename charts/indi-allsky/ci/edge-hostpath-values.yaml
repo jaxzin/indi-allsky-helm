@@ -4,6 +4,12 @@
 # externally owned PriorityClass, and an enabled Ingress with TLS. All
 # credentials are throwaway render fixtures; this directory is excluded from
 # packaged charts by .helmignore.
+#
+# It also carries both optional extras, because this is the fixture with real
+# local hardware: NFD camera autodiscovery only makes sense on a node with a
+# camera physically attached, and the broker is the natural companion to a
+# capture pipeline publishing MQTT. This is therefore the render that exercises
+# the NodeFeatureRule against kubeconform's kind-scoped skip.
 credentials:
   flaskSecretKey: ci-dummy
   flaskPasswordKey: ci-dummy
@@ -55,3 +61,14 @@ web:
     tls:
       - hosts: [allsky.ci.example.com]
         secretName: ci-allsky-tls
+mosquitto:
+  enabled: true
+  resources:
+    requests: {cpu: 50m, memory: 32Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+discovery:
+  nfd:
+    enabled: true
+    # ZWO, QHY and a third id, so the render covers a list an operator extended
+    # rather than only the shipped default.
+    usbVendorIds: ["03c3", "1618", "0547"]
