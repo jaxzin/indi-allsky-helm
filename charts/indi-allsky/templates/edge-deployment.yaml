@@ -227,10 +227,22 @@ spec:
           why device-plugin is the documented preferred hardware path.
 
           Privileged, but still NOT root: the pod's runAsNonRoot/runAsUser 10001
-          is deliberately left in place. Privileged already grants
-          CAP_DAC_OVERRIDE, so the device node's ownership stops mattering, and
-          dropping to uid 0 as well would buy nothing while breaking the "no
-          container in this chart runs as root" property outright.
+          is deliberately left in place.
+
+          Be precise about what that costs. `privileged: true` on a NON-root uid
+          grants no capabilities at all — measured CapEff is 0, because the
+          ambient set is empty and the binary carries no file capabilities; only
+          the bounding set is full. So there is no CAP_DAC_OVERRIDE here and
+          ordinary Unix permissions on the device node still apply. What
+          privileged does still provide is an unrestricted device cgroup, a
+          read-write /sys, and an unconfined seccomp/AppArmor profile.
+
+          The consequence is an operator requirement, not a chart bug: reaching
+          a hostPath camera at uid 10001 needs the device node to be readable by
+          this uid or by a gid listed in edge.supplementalGroups — normally the
+          vendor's udev rule. docs/node-contract.md states it, and whether this
+          chart should instead run this one container as root is tracked in
+          issue #34.
           */}}
           securityContext:
             privileged: true

@@ -76,9 +76,34 @@ drivers upstream ships — which is why `device-plugin` is the preferred hardwar
 path and gets the restricted context instead.
 
 Privileged is **not** root here: the pod's `runAsUser: 10001` stays in place.
-Privileged already grants `CAP_DAC_OVERRIDE`, so the device node's ownership
-stops mattering, and dropping to uid 0 as well would buy nothing while breaking
-the "no container in this chart runs as root" property outright.
+
+**Know exactly what that means for device access.** `privileged: true` on a
+non-root uid grants *no capabilities* — the effective set is empty, because the
+ambient set is empty and the binary carries no file capabilities; only the
+bounding set is full. Measured on this image:
+
+| Posture | Effective capabilities | Opens a `root:<group> 0640` node |
+| --- | --- | --- |
+| privileged, uid 10001, no supplemental group | none | **no** |
+| privileged, uid 10001, matching `supplementalGroups` | none | yes |
+| privileged, uid 0 | all | yes |
+
+So privileged does **not** bypass the device node's ownership. What it does
+provide is an unrestricted device cgroup, a read-write `/sys`, and an
+unconfined seccomp/AppArmor profile.
+
+**The operator requirement that follows:** a hostPath camera or sensor node must
+be reachable by uid 10001 — either world-readable/writable, or owned by a group
+listed in `edge.supplementalGroups`. That is normally what the camera vendor's
+udev rule already does (ZWO and QHY both ship rules that set a mode or a group);
+if no such rule is installed, the node is typically `root:root 0664` and the
+container will get `EACCES` where upstream's root-in-container would not have.
+Install the vendor udev rule, or set `edge.supplementalGroups` to the gid the
+node actually carries.
+
+Whether this chart should instead run this single container as root is an open
+design question, tracked in
+[issue #34](https://github.com/jaxzin/indi-allsky-helm/issues/34).
 
 **The daemon is never privileged**, in any mode, including hostPath sensors. It
 is an ordinary Python process; the camera is attached to the sidecar, and sensor
