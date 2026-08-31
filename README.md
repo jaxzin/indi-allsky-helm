@@ -17,8 +17,10 @@ schedule anywhere, mount no host device, and run no privileged container.
 
 ```sh
 # A throwaway credential Secret — see docs/configuration.md for the real thing.
-# INDIALLSKY_FLASK_PASSWORD_KEY is a Fernet key (32 url-safe base64 bytes) and
-# it is what decrypts stored application passwords: keep it, or lose them.
+# INDIALLSKY_FLASK_PASSWORD_KEY is a Fernet key — 32 random bytes, url-safe
+# base64 — and it is what decrypts stored application passwords. Keep it.
+# Replace your-rwx-storageclass below; the chart rejects a name that is not a
+# valid DNS subdomain, so the placeholder has to be lowercase.
 kubectl create namespace allsky
 kubectl -n allsky create secret generic indi-allsky-env \
   --from-literal=INDIALLSKY_FLASK_SECRET_KEY="$(openssl rand -hex 32)" \
@@ -33,7 +35,7 @@ helm install allsky oci://ghcr.io/jaxzin/charts/indi-allsky \
   --set credentials.existingSecret=indi-allsky-env \
   --set mariadb.rootCredentials.existingSecret=indi-allsky-mariadb-root \
   --set adminUser.username=admin \
-  --set storage.data.storageClassName=YOUR-RWX-CLASS
+  --set storage.data.storageClassName=your-rwx-storageclass
 
 kubectl -n allsky port-forward svc/allsky-indi-allsky-web 8080:8080
 # then http://localhost:8080/indi-allsky
@@ -101,9 +103,9 @@ in [docs/configuration.md](docs/configuration.md); this is the short version.
   grants, and a lost root password cannot be reset by setting a new Secret
   value while a populated datadir survives.
 - **Both PVCs belong to exactly one release.** The database datadir and the
-  shared application volume are one coherent recovery set — images without a
-  matching database, or a database without its migration history, is not a
-  recovery. Do not share or rebind either claim across releases.
+  shared application volume are one coherent recovery set: neither images
+  without a matching database nor a database without its migration history is
+  a recovery. Do not share or rebind either claim across releases.
 - **`.sql.gz` dumps are compressed, not encrypted.** Encryption at rest,
   transport, and off-cluster retention belong to your storage and your backup
   automation. A usable recovery set is the dump *plus* the application Secret
@@ -117,10 +119,10 @@ configuration and serve the restored catalogue, including the truncated-dump
 and missing-history failure paths
 ([PR #40](https://github.com/jaxzin/indi-allsky-helm/pull/40)).
 
-One more, from the same page: **the image archive is served unauthenticated**,
-regardless of `web.authAllViews`. nginx serves it directly off the volume, so
-those requests never reach Flask. Gate it at the ingress if it should be
-private.
+And one that is not about data: **the image archive is served
+unauthenticated**, regardless of `web.authAllViews`. nginx serves it directly
+off the volume, so those requests never reach Flask and never see the
+application's auth. Gate it at the ingress if the archive should be private.
 
 ## Images
 
