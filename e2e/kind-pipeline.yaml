@@ -1,0 +1,26 @@
+# kind topology for the pipeline / network-policy / placement scenarios.
+#
+# THREE nodes, because kind taints its control plane NoSchedule: two workers is
+# the minimum that makes the node-contract placement proof mean anything. A
+# single schedulable worker would host the edge pod whether or not the chart's
+# nodeSelector worked, so it proves nothing about label enforcement.
+#
+# The default CNI is disabled on purpose. kindnet — kind's default — implements
+# pod networking but does NOT enforce NetworkPolicy, so every policy the chart
+# renders would pass a template assertion and drop nothing at runtime.
+# e2e/install-cni.sh installs a pinned Calico and then proves enforcement with a
+# deny-all canary before any chart assertion is trusted.
+#
+# podSubnet matches Calico's own default IPv4 pool (192.168.0.0/16). The
+# alternative — kind's 10.244.0.0/16 plus a CALICO_IPV4POOL_CIDR patch — means
+# editing a 350 KB upstream manifest in CI, which is a worse thing to maintain
+# than one line here.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

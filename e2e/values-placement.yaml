@@ -1,0 +1,55 @@
+# Overlay on e2e/values-e2e.yaml for the node-contract placement scenario.
+#
+# This is the ONLY e2e fixture that opts into host devices, and it is a
+# separate release in a separate namespace for that reason: the secure-default
+# pipeline must never acquire a device dependency by sharing a values file with
+# it.
+#
+# The camera hostPath is a harmless empty directory created on every worker by
+# e2e/verify-placement.sh, not a real device node. That matters twice over:
+# `type: Directory` is validated by kubelet at mount time, so the path has to
+# exist on whichever node is chosen; and creating it on BOTH workers means the
+# only thing that can decide placement is the node-contract label, which is the
+# fact under test. The driver stays the simulator — nothing here reads a device.
+#
+# Setting hostPaths for the camera in sidecar mode is what makes the chart
+# render the nodeSelector and the one privileged container it has. That is the
+# documented cost of the explicit opt-in, and this scenario asserts both.
+
+edge:
+  devices:
+    mode: hostpath
+    camera:
+      hostPaths:
+        - path: /mnt/indi-allsky-e2e-camera
+          type: Directory
+          # Read-only: a fixture directory, never written. The chart renders
+          # what is stated here rather than inferring access from the path.
+          readOnly: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+web:
+  # The shared claim is ReadWriteOnce on kind, so its PersistentVolume binds to
+  # whichever node first consumes it. Without this the web pod could bind the
+  # volume to the UNlabELLED worker and the edge pod would then be Pending for
+  # a storage reason rather than a scheduling one — a false negative that looks
+  # exactly like a broken nodeSelector. Pinning web to the same contract label
+  # keeps the only variable the label itself.
+  nodeSelector:
+    indi-allsky.io/camera: "true"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+
+mariadb:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
