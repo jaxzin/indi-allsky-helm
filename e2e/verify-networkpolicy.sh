@@ -21,6 +21,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=e2e/lib.sh
+# shellcheck disable=SC1091  # resolved only when shellcheck is run with -x over the whole directory
 source "${SCRIPT_DIRECTORY}/lib.sh"
 
 UNLABELLED_PROBE="np-probe-unlabelled"

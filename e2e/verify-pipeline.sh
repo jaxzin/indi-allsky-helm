@@ -21,6 +21,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=e2e/lib.sh
+# shellcheck disable=SC1091  # resolved only when shellcheck is run with -x over the whole directory
 source "${SCRIPT_DIRECTORY}/lib.sh"
 
 LOCAL_FORWARD_PORT=18080
@@ -142,11 +143,11 @@ pass "${image_rows} image row(s) catalogued for ${camera_rows} camera(s)"
 image_filename="$(db_query 'SELECT filename FROM image ORDER BY createDate DESC LIMIT 1;' | tr -d '\r')"
 test -n "$image_filename" || fail "the newest image row has an empty filename"
 case "$image_filename" in
-    /*) image_path="$image_filename" ;;
-    *) image_path="${IMAGE_PATH}/${image_filename}" ;;
+    /*) catalogued_file="$image_filename" ;;
+    *) catalogued_file="${IMAGE_PATH}/${image_filename}" ;;
 esac
-k exec "$edge_pod" --container daemon -- test -f "$image_path" \
-    || fail "the newest image row names ${image_path}, which does not exist on the shared volume"
+k exec "$edge_pod" --container daemon -- test -f "$catalogued_file" \
+    || fail "the newest image row names ${catalogued_file}, which does not exist on the shared volume"
 
 k exec "$edge_pod" --container daemon -- \
     bash -c 'test -n "$(find "$1" -maxdepth 1 -type f -name "latest.*" -print -quit)"' _ "$IMAGE_PATH" \
