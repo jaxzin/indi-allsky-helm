@@ -242,4 +242,89 @@ expect_failure \
     "storage.data.storageClassName must be a valid DNS subdomain StorageClass name" \
     --set-string storage.data.storageClassName=$'storage.example\n---\nkind: Secret'
 
+# --- A6/A7 workload guards ---------------------------------------------------
+
+expect_failure \
+    "PriorityClass reference mode without a name" \
+    "edge.priorityClass.name is required when edge.priorityClass.mode=reference" \
+    --set-string edge.priorityClass.mode=reference
+
+expect_failure \
+    "PriorityClass name outside reference mode" \
+    "edge.priorityClass.name must be empty when edge.priorityClass.mode=create" \
+    --set-string edge.priorityClass.name=platform-owned-capture
+
+expect_failure \
+    "PriorityClass above the Kubernetes user-priority ceiling" \
+    "edge.priorityClass.value must be <= 1000000000" \
+    --set edge.priorityClass.value=1000000001
+
+expect_failure \
+    "bare-string host device entry" \
+    "edge.devices.camera.hostPaths[0] must be an object with exactly the fields path, type and readOnly" \
+    --set-string edge.devices.mode=hostpath \
+    --set-json 'edge.devices.camera.hostPaths=["/dev/bus/usb"]'
+
+expect_failure \
+    "relative host device path" \
+    "edge.devices.camera.hostPaths[0].path must be an absolute path with no whitespace" \
+    --set-string edge.devices.mode=hostpath \
+    --set-json 'edge.devices.camera.hostPaths=[{"path":"dev/bus/usb","type":"Directory","readOnly":false}]'
+
+expect_failure \
+    "unsupported host device type" \
+    "edge.devices.camera.hostPaths[0].type must be one of: Directory, CharDevice" \
+    --set-string edge.devices.mode=hostpath \
+    --set-json 'edge.devices.camera.hostPaths=[{"path":"/dev/bus/usb","type":"Socket","readOnly":false}]'
+
+expect_failure \
+    "sensors enabled with no access mechanism" \
+    "edge.sensors.enabled=true requires edge.devices.mode=hostpath or device-plugin" \
+    --set edge.sensors.enabled=true
+
+expect_failure \
+    "device-plugin mode without a camera resource" \
+    "edge.devices.mode=device-plugin requires edge.devices.camera.resources" \
+    --set-string edge.devices.mode=device-plugin
+
+expect_failure \
+    "supplemental groups outside hostpath mode" \
+    "edge.supplementalGroups must be empty unless edge.devices.mode=hostpath" \
+    --set-json 'edge.supplementalGroups=[20]'
+
+expect_failure \
+    "local camera devices with an external INDI server" \
+    "edge.devices.camera.hostPaths must be empty when indiserver.mode=external" \
+    --set-string indiserver.mode=external \
+    --set-string indiserver.external.host=indi.example.com \
+    --set-string edge.devices.mode=hostpath \
+    --set-json 'edge.devices.camera.hostPaths=[{"path":"/dev/bus/usb","type":"Directory","readOnly":false}]'
+
+expect_failure \
+    "capture scratch path shadowing the data volume" \
+    "edge.captureTmpDir must not overlap /var/www/html" \
+    --set-string edge.captureTmpDir=/var/www/html/scratch
+
+expect_failure \
+    "capture scratch path shadowing the rendered config" \
+    "edge.captureTmpDir must not overlap /etc/indi-allsky" \
+    --set-string edge.captureTmpDir=/etc/indi-allsky
+
+expect_failure \
+    "non-boolean NetworkPolicy toggle" \
+    "networkPolicy.enabled must be a boolean" \
+    --set-string networkPolicy.enabled=true
+
+expect_failure \
+    "out-of-range web Service port" \
+    "web.service.port must be <= 65535" \
+    --set web.service.port=70000
+
+expect_failure \
+    "enabled Ingress with no host" \
+    "web.ingress.host must be set and non-empty" \
+    --set web.ingress.enabled=true \
+    --set-string web.ingress.host=
+
+
 printf 'direct render matrix: 2 valid modes, %d invalid modes passed\n' "$case_number"

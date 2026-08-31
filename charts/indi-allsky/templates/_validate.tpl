@@ -41,14 +41,13 @@
 {{- if not (has $kind (list "int" "int32" "int64" "float64")) -}}
   {{- fail (printf "%s must be a whole number >= %d" .name (int .minimum)) -}}
 {{- end -}}
-{{/* Helm parses every YAML number as float64, and Go renders large ones in
-     exponent form — 1000000 comes back as "1e+06" — so the whole-number test
-     has to accept that spelling. A fractional or negative value always carries
-     a dot or a sign and never matches either form. The comparison below uses
-     the numeric value rather than this rendering, because casting "1e+06" back
-     through a string yields 0. */}}
-{{- $rendered := printf "%v" .value -}}
-{{- if not (regexMatch "^[0-9]+([eE]\\+?[0-9]+)?$" $rendered) -}}
+{{/* Wholeness is tested numerically, not against a rendering. Helm parses every
+     YAML number as float64 and Go prints large ones in exponent form —
+     1000000 becomes "1e+06" and 1000000001 becomes "1.000000001e+09" — so a
+     regex over the printed form either rejects legitimate whole numbers or has
+     to accept a decimal point and stop catching real fractions. Truncating and
+     comparing back has neither problem. */}}
+{{- if ne (float64 (int64 .value)) (float64 .value) -}}
   {{- fail (printf "%s must be a whole number >= %d" .name (int .minimum)) -}}
 {{- end -}}
 {{- if lt (int64 .value) (int64 .minimum) -}}
