@@ -40,4 +40,6 @@ lint:
 	shellcheck charts/indi-allsky/tests/*.sh
 	@echo "e2e shellcheck:"; ls -1 e2e/*.sh
 	shellcheck e2e/*.sh
+	@echo "scripts shellcheck:"; ls -1 scripts/*.sh
+	shellcheck scripts/*.sh
 	actionlint

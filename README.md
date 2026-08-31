@@ -58,7 +58,7 @@ ones almost every install touches.
 
 | Value | Default | Why you care |
 | --- | --- | --- |
-| `image.digests.{indiserver,daemon,web}` | `""` | **The production pinning path.** Each release publishes the digests it was tested against. Empty means mutable tags under `IfNotPresent`, so a cached node and a fresh node can diverge. |
+| `image.digests.{indiserver,daemon,web}` | `""` in this repo; baked in by the published OCI chart | Empty means mutable tags under `IfNotPresent`, so a cached node and a fresh node can diverge — the risk this exists to remove. Installing the OCI chart already gets it for free; installing from `git` does not, see the release notes. |
 | `storage.data.storageClassName` | `""` (cluster default) | Must be `ReadWriteMany`: edge is pinned to the camera node, web is not. |
 | `storage.retentionPolicy` | `Retain` | Keeps both PVCs — the image archive **and** the database — across an uninstall. |
 | `credentials.existingSecret` | `""` | Your Secret with the Flask keys and the database password. Inline values exist for development only. |
