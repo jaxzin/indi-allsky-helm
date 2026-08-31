@@ -31,7 +31,7 @@ kubectl -n allsky create secret generic indi-allsky-mariadb-root \
   --from-literal=MARIADB_ROOT_PASSWORD="$(openssl rand -hex 16)"
 
 helm install allsky oci://ghcr.io/jaxzin/charts/indi-allsky \
-  --version 0.1.0 --namespace allsky \
+  --version 0.1.0-rc.1 --namespace allsky \
   --set credentials.existingSecret=indi-allsky-env \
   --set mariadb.rootCredentials.existingSecret=indi-allsky-mariadb-root \
   --set adminUser.username=admin \
@@ -41,9 +41,9 @@ kubectl -n allsky port-forward svc/allsky-indi-allsky-web 8080:8080
 # then http://localhost:8080/indi-allsky
 ```
 
-> The first chart version is not published yet — see
-> [project status](#project-status) below. Until it is, install from a git
-> checkout: `helm install allsky ./charts/indi-allsky …`.
+> Tested end-to-end in CI against a real cluster with a simulated camera —
+> see [Project status](#project-status) for exactly what that does and does
+> not cover before pointing this at real hardware.
 
 For a real camera, copy
 [`examples/values-zwo-pi.yaml`](examples/values-zwo-pi.yaml) and read
@@ -58,7 +58,7 @@ ones almost every install touches.
 
 | Value | Default | Why you care |
 | --- | --- | --- |
-| `image.digests.{indiserver,daemon,web}` | `""` | **The production pinning path.** Each release publishes the digests it was tested against. Empty means mutable tags under `IfNotPresent`, so a cached node and a fresh node can diverge. |
+| `image.digests.{indiserver,daemon,web}` | `""` in this repo; baked in by the published OCI chart | Empty means mutable tags under `IfNotPresent`, so a cached node and a fresh node can diverge — the risk this exists to remove. Installing the OCI chart already gets it for free; installing from `git` does not, see the release notes. |
 | `storage.data.storageClassName` | `""` (cluster default) | Must be `ReadWriteMany`: edge is pinned to the camera node, web is not. |
 | `storage.retentionPolicy` | `Retain` | Keeps both PVCs — the image archive **and** the database — across an uninstall. |
 | `credentials.existingSecret` | `""` | Your Secret with the Flask keys and the database password. Inline values exist for development only. |
@@ -237,7 +237,7 @@ Details: [docs/node-contract.md](docs/node-contract.md).
 
 ## Project status
 
-**v1, first release pending.** Everything below is built, tested in CI, and
+**v1, feature-complete.** Everything below is built, tested in CI, and
 described in the docs above:
 
 - the edge topology — indiserver sidecar plus daemon, pinned by node label,
@@ -256,10 +256,12 @@ described in the docs above:
   policy enforcement, node placement, the overlay barrier, migration paths and
   the backup/restore procedure.
 
-Not yet published: the chart itself. The release workflow is in place
-(`.github/workflows/release.yml`); pushing `chart-v0.1.0` packages the chart,
-pushes it to `oci://ghcr.io/jaxzin/charts`, and records the commit SHA and the
-three image digests in the release notes.
+CI proves this against upstream's INDI *simulator* driver in disposable
+`kind` clusters, not physical camera hardware or a production cluster. Treat
+that gap as real until this chart has run on your own camera.
+
+Published versions, exactly what each pins, and whether it is a release
+candidate: [Releases](https://github.com/jaxzin/indi-allsky-helm/releases).
 
 ### Roadmap
 
@@ -335,10 +337,25 @@ chart, the images or the docs belong here.
 
 ### Releasing
 
-Chart releases are cut by pushing an annotated tag `chart-v<semver>` at the
-commit to publish. `.github/workflows/release.yml` then refuses the tag if it
-disagrees with `Chart.yaml`, resolves the three image digests out of the
-registry, packages and pushes the chart to `oci://ghcr.io/jaxzin/charts`,
-verifies it is pullable, and opens a GitHub Release recording the commit SHA
-and those digests alongside GitHub's generated change list. Nothing about a
-release is typed into a form.
+`scripts/sync-chart-version.sh <version>` is the one command that changes
+this repo's chart version: it writes `<version>` into `Chart.yaml` and
+propagates it to every place that needs a literal pin — the quickstart's
+`--version` flag, both GitOps examples. Review the diff, commit it, then push
+an annotated tag `chart-v<version>` at that commit. CI runs the same script
+in `--check` mode and fails the build if a version was ever hand-edited
+around it.
+
+`.github/workflows/release.yml` then: refuses the tag if it disagrees with
+`Chart.yaml` or if `appVersion` has drifted from `UPSTREAM_VERSION`; marks
+the release a GitHub pre-release automatically when the version carries a
+SemVer pre-release identifier (`-rc.1`, `-beta`, …); resolves the three
+image digests out of the registry and bakes them into the **packaged
+chart's own values** — not left for a consumer to `--set`, so every OCI
+install of the release defaults to the exact SHA-pinned images it was
+tested against; verifies that baking against the local package *before*
+pushing, since a chart published under a version number can never be
+un-published or re-pushed under that same tag; pushes to
+`oci://ghcr.io/jaxzin/charts`; verifies the published artifact is pullable
+and still carries those digests; and opens a GitHub Release recording the
+commit SHA and the digests alongside GitHub's generated change list.
+Nothing about a release is typed into a form.

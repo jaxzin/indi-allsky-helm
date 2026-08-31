@@ -56,6 +56,13 @@ jobs:
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           scandir: ./e2e
+      - name: Find repo-maintenance shell scripts
+        run: |
+          find scripts -name '*.sh' -type f -print
+          test -n "$(find scripts -name '*.sh' -type f -print -quit)"
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          scandir: ./scripts
 
   hadolint:
     runs-on: ubuntu-24.04

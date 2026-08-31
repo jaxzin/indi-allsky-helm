@@ -17,18 +17,21 @@ spec:
   sources:
     - repoURL: ghcr.io/jaxzin/charts
       chart: indi-allsky
-      # A chart version, not the git tag: the release `chart-v0.1.0` publishes
-      # chart version 0.1.0. Pin it exactly — `0.1.x` would let a patch
-      # release land without a reviewed diff.
-      targetRevision: 0.1.0
+      # A chart version, not the git tag: release `chart-v<version>` publishes
+      # chart version `<version>` (same string, without the `chart-v`
+      # prefix). Pin it exactly — a range like `0.1.x` would let a patch
+      # release land without a reviewed diff. Current version:
+      # https://github.com/jaxzin/indi-allsky-helm/releases
+      targetRevision: 0.1.0-rc.1
       helm:
         valueFiles:
           - $values/examples/values-zwo-pi.yaml
-        # Uncomment and fill in to pin the images by digest — the production
-        # path. Each chart version's release notes publish the three digests it
-        # was tested against. Left unset, the chart resolves mutable tags under
-        # pullPolicy IfNotPresent, and a node that cached the tag earlier can
-        # run different code than one pulling it fresh.
+        # Left commented out on purpose: the published OCI chart already
+        # defaults to the exact digests it was released with, baked into the
+        # package itself. Uncomment and fill in ONLY to override those with
+        # different digests — setting this to the same values is redundant,
+        # and setting any to an empty string overrides the safe default with
+        # a mutable-tag fallback instead.
         values: |
           # image:
           #   digests:
@@ -36,7 +39,7 @@ spec:
           #     daemon: sha256:...
           #     web: sha256:...
     - repoURL: https://github.com/jaxzin/indi-allsky-helm
-      targetRevision: chart-v0.1.0
+      targetRevision: chart-v0.1.0-rc.1
       ref: values
   destination:
     server: https://kubernetes.default.svc
@@ -63,7 +66,7 @@ spec:
 #   project: default
 #   source:
 #     repoURL: https://github.com/jaxzin/indi-allsky-helm
-#     targetRevision: chart-v0.1.0
+#     targetRevision: chart-v0.1.0-rc.1
 #     path: charts/indi-allsky
 #     helm:
 #       valueFiles:

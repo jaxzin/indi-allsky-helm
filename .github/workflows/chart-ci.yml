@@ -13,6 +13,10 @@ on:
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
       - "UPSTREAM_VERSION"
+      # README.md and scripts/** carry the tracked chart-version references
+      # scripts/sync-chart-version.sh checks below.
+      - "README.md"
+      - "scripts/**"
   push:
     branches: [main]
     paths:
@@ -26,6 +30,8 @@ on:
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
       - "UPSTREAM_VERSION"
+      - "README.md"
+      - "scripts/**"
 
 permissions:
   contents: read
@@ -62,6 +68,15 @@ jobs:
             exit 1
           fi
           echo "appVersion $appver matches UPSTREAM_VERSION"
+
+      # Chart.yaml's version is the single source of truth for every other
+      # place a concrete chart version has to appear (README's install
+      # command, the GitOps examples' pinned fields) — scripts/sync-
+      # chart-version.sh is the one command that writes it everywhere at
+      # once. This is what enforces that nobody hand-edited one of those
+      # fields, or bumped Chart.yaml, without running it.
+      - name: Chart version is in sync across README and examples
+        run: scripts/sync-chart-version.sh --check
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
