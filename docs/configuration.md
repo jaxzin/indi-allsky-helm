@@ -347,8 +347,9 @@ grants is a verification step on a surviving server and a repair only on a
 rebuilt one; and the MariaDB root Secret is never mounted by any application or
 backup workload, so every root step above has to be run from inside the database
 container. That scenario landed in
-[PR #40](https://github.com/jaxzin/indi-allsky-helm/pull/40) and runs on every
-pull request in the `e2e-database` job; it is the evidence the
+[PR #40](https://github.com/jaxzin/indi-allsky-helm/pull/40) and runs in the
+`e2e-database` job on every change to the chart or the images; it is the
+evidence the
 [A10 release handoff](https://github.com/jaxzin/indi-allsky-helm/issues/10#issuecomment-5417846008)
 required before a first supported release, and the operator-facing summary of
 these contracts is the [README's lifecycle section](../README.md#before-you-run-this-for-real).

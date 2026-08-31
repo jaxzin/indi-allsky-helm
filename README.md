@@ -113,7 +113,8 @@ in [docs/configuration.md](docs/configuration.md); this is the short version.
   archive.
 
 The restore procedure is not untested prose: `e2e/verify-restore.sh` runs it
-end to end against a live release on every pull request — quiesce, dump, drop,
+end to end against a live release in CI, on every change to the chart or the
+images — quiesce, dump, drop,
 recreate, restore, restart, then require the application to decrypt its
 configuration and serve the restored catalogue, including the truncated-dump
 and missing-history failure paths

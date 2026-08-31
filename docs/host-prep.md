@@ -5,9 +5,11 @@ into it. **The chart never configures a node.** Node state is an input, owned
 by whatever configures your machines — Ansible, a machine image, your cluster's
 own bootstrap — and none of the steps below are things Helm can do for you.
 
-Skip this page entirely if you are running `edge.devices.mode: none` (the
-default INDI simulator) or `indiserver.mode: external`. Neither touches host
-hardware.
+Skip this page entirely if you are running `edge.devices.mode: none` — the
+default INDI simulator touches no host hardware at all. With
+`indiserver.mode: external` the camera section does not apply either, since the
+camera belongs to a server this chart does not manage; the sensor and storage
+sections still do.
 
 The commands here are Raspberry Pi OS / Debian, because that is what an all-sky
 camera is usually plugged into. Translate as needed; the *requirements* are the
@@ -168,10 +170,11 @@ pod stuck in `ContainerCreating` with a `mount.nfs: ... helper program not
 found` event, on that node only — so it can look like an intermittent
 scheduling problem rather than a missing package.
 
-The share's own export options are the storage system's concern, but two of
-them matter here: the export must allow uid 10001 to write (no `root_squash`
-surprise — the chart never writes as root), and it has to be reachable from
-every node above.
+The share's own export options are the storage system's concern, but one of
+them matters here: the export has to let **uid 10001** write. `root_squash` is
+irrelevant, because nothing in this chart writes as root — but an export that
+squashes all users, or whose uid mapping has no 10001, will fail writes that
+look like a permissions bug in the application.
 
 ## Container runtime
 
