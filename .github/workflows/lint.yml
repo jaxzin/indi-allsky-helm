@@ -83,3 +83,8 @@ jobs:
           persist-credentials: false
       - name: Run the pin gate and validate the bake graph
         run: make bake-print
+
+      # Same job because it needs the same pinned checkout and the same
+      # nothing-is-built guarantee.
+      - name: Static image contract
+        run: images/tests/image-contract.sh --static-contract
