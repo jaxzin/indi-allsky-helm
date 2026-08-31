@@ -1,6 +1,9 @@
 {{- include "indi-allsky.validateValues" . -}}
 {{- if and .Values.mariadb.enabled .Values.mariadb.backup.enabled -}}
 {{- $appUid := include "indi-allsky.appUid" . | int -}}
+{{- $dataMountPath := include "indi-allsky.dataMountPath" . -}}
+{{- $stateMountPath := dir (include "indi-allsky.overlaySentinelPath" .) | trimSuffix "/" -}}
+{{- $stateSubPath := trimPrefix (printf "%s/" $dataMountPath) $stateMountPath -}}
 {{- $startingDeadlineSeconds := 900 -}}
 {{- $successfulJobsHistoryLimit := 3 -}}
 {{- $failedJobsHistoryLimit := 3 -}}
@@ -43,96 +46,50 @@ spec:
           {{- end }}
           containers:
             - name: dump
-              image: {{ .Values.mariadb.image | quote }}
+              {{- /*
+              The chart's own web image, not the mariadb image. The dump now
+              runs inside the shared advisory lock (#16) and publishes through
+              the same no-clobber primitive as the pre-migration dump (#22),
+              and both of those live in scripts this repo ships, lints and
+              tests. The web image already carries mariadb-client for exactly
+              this reason. An inline copy of the same logic here would be a
+              second implementation of the safety property, free to drift.
+              */}}
+              image: {{ include "indi-allsky.image" (dict "ctx" . "name" "web") | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               securityContext:
-                runAsNonRoot: true
-                runAsUser: {{ $appUid }}
-                runAsGroup: {{ $appUid }}
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop:
-                    - ALL
-                seccompProfile:
-                  type: RuntimeDefault
+                {{- include "indi-allsky.restrictedSecurityContext" . | nindent 16 }}
+              command: ["/home/allsky/db-maintenance-lock.sh"]
+              args: ["--", "/home/allsky/scheduled-backup.sh"]
               env:
-                - name: DB_HOST
+                {{- /* Explicit and minimal, and named exactly as the migration
+                       path names them so the lock is taken on the same endpoint
+                       the dump then reads. */}}
+                - name: INDIALLSKY_MARIADB_HOST
                   value: {{ include "indi-allsky.dbHost" . | quote }}
-                - name: DB_PORT
+                - name: INDIALLSKY_MARIADB_PORT
                   value: {{ include "indi-allsky.mariadbPort" . | quote }}
-                - name: DB_USER
+                - name: INDIALLSKY_MARIADB_SSL
+                  value: "false"
+                - name: MARIADB_USER
                   value: {{ .Values.mariadb.username | quote }}
-                - name: DB_DATABASE
+                - name: MARIADB_DATABASE
                   value: {{ .Values.mariadb.database | quote }}
-                - name: MYSQL_PWD
+                - name: MARIADB_PASSWORD
                   valueFrom:
                     secretKeyRef:
                       name: {{ include "indi-allsky.envSecretName" . }}
                       key: MARIADB_PASSWORD
-                - name: BACKUP_DIR
+                - name: INDIALLSKY_BACKUP_DIR
                   value: {{ include "indi-allsky.backupPath" . | quote }}
-                - name: RETENTION_DAYS
+                - name: INDIALLSKY_BACKUP_RETENTION_DAYS
                   value: {{ .Values.mariadb.backup.retentionDays | quote }}
-                - name: SCHEDULED_BACKUP_PREFIX
-                  value: indi-allsky_scheduled
-                - name: BACKUP_DIR_MODE
-                  value: "0700"
-                - name: BACKUP_FILE_MODE
-                  value: "0600"
-              command:
-                - /bin/bash
-                - -c
-              args:
-                - |
-                  set -Eeuo pipefail
-                  umask 077
-
-                  temporary_file=""
-                  cleanup() {
-                    if [ -n "$temporary_file" ]; then
-                      rm -f -- "$temporary_file"
-                    fi
-                  }
-                  trap cleanup EXIT INT TERM HUP
-
-                  mkdir -p -- "$BACKUP_DIR"
-                  chmod "$BACKUP_DIR_MODE" "$BACKUP_DIR"
-                  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-                  temporary_file="$(mktemp "${BACKUP_DIR}/.${SCHEDULED_BACKUP_PREFIX}_${timestamp}.XXXXXX.tmp")"
-                  temporary_name="${temporary_file##*/}"
-                  unique_suffix="${temporary_name%.tmp}"
-                  unique_suffix="${unique_suffix##*.}"
-                  final_file="${BACKUP_DIR}/${SCHEDULED_BACKUP_PREFIX}_${timestamp}_${unique_suffix}.sql.gz"
-
-                  mariadb-dump \
-                    --host="$DB_HOST" \
-                    --port="$DB_PORT" \
-                    --user="$DB_USER" \
-                    --single-transaction \
-                    --quick \
-                    --no-tablespaces \
-                    -- "$DB_DATABASE" | gzip -c > "$temporary_file"
-
-                  gzip -t "$temporary_file"
-                  if [ ! -s "$temporary_file" ]; then
-                    echo "FATAL: scheduled database dump is empty" >&2
-                    exit 1
-                  fi
-                  chmod "$BACKUP_FILE_MODE" "$temporary_file"
-                  mv -- "$temporary_file" "$final_file"
-                  temporary_file=""
-                  backup_size="$(wc -c < "$final_file" | tr -d '[:space:]')"
-                  printf 'Verified scheduled database backup: %s (%s bytes)\n' \
-                    "$final_file" "$backup_size"
-
-                  # Retention is deliberately restricted to this job's prefix.
-                  # migrate.sh owns the separate pre-migration dump lifecycle.
-                  find "$BACKUP_DIR" -maxdepth 1 -type f \
-                    -name "${SCHEDULED_BACKUP_PREFIX}_*.sql.gz" \
-                    -mtime "+${RETENTION_DAYS}" -delete
               volumeMounts:
+                {{- /* The .state sibling only. This Job writes dumps; it has no
+                       business reading the image tree or the web docroot. */}}
                 - name: data
-                  mountPath: {{ include "indi-allsky.dataMountPath" . }}
+                  mountPath: {{ $stateMountPath }}
+                  subPath: {{ $stateSubPath }}
           volumes:
             - name: data
               persistentVolumeClaim:

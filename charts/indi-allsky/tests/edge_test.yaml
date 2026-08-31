@@ -1,0 +1,509 @@
+suite: edge workload, device modes and startup barrier
+values:
+  - a5-values.yaml
+templates:
+  - edge-deployment.yaml
+  - configmap-env.yaml
+release:
+  name: test-release
+tests:
+  - it: renders one replica that is replaced, never surged
+    template: edge-deployment.yaml
+    asserts:
+      - equal: {path: metadata.name, value: test-release-indi-allsky-edge}
+      - equal: {path: spec.replicas, value: 1}
+      - equal: {path: spec.strategy.type, value: Recreate}
+      - notExists: {path: spec.strategy.rollingUpdate}
+      - equal: {path: spec.template.spec.automountServiceAccountToken, value: false}
+
+  - it: rolls the pod on environment and overlay changes and honours annotations
+    template: edge-deployment.yaml
+    set:
+      edge.podAnnotations:
+        reloader.stakater.com/auto: "true"
+    asserts:
+      - exists:
+          path: 'spec.template.metadata.annotations["checksum/env-configmap"]'
+      - equal:
+          path: 'spec.template.metadata.annotations["checksum/overlay-configmap"]'
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+      - equal:
+          path: 'spec.template.metadata.annotations["reloader.stakater.com/auto"]'
+          value: "true"
+
+  - it: keeps the suffixed name inside the DNS-label limit at the release boundary
+    template: edge-deployment.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-edge$'}
+
+  - it: honours tolerations
+    template: edge-deployment.yaml
+    set:
+      edge.tolerations:
+        - key: indi-allsky.io/camera
+          operator: Exists
+          effect: NoSchedule
+    asserts:
+      - equal: {path: "spec.template.spec.tolerations[0].key", value: indi-allsky.io/camera}
+
+  # Secure simulator defaults: schedulable anywhere, no host devices, no
+  # privileged container, no supplemental groups.
+  - it: is schedulable anywhere with the secure defaults
+    template: edge-deployment.yaml
+    asserts:
+      - notExists: {path: spec.template.spec.nodeSelector}
+      - notExists: {path: spec.template.spec.securityContext.supplementalGroups}
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.privileged'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.runAsUser'
+          value: 10001
+      - notExists:
+          path: 'spec.template.spec.volumes[?(@.hostPath)]'
+
+  # The overlay barrier
+  - it: gates startup on the exact applied-overlay checksum
+    template: edge-deployment.yaml
+    asserts:
+      - equal: {path: "spec.template.spec.initContainers[0].name", value: wait-for-overlay}
+      - lengthEqual: {path: spec.template.spec.initContainers, count: 1}
+      - equal:
+          path: "spec.template.spec.initContainers[0].command"
+          value: [/home/allsky/wait-overlay.sh]
+      - contains:
+          path: "spec.template.spec.initContainers[0].env"
+          content:
+            name: INDIALLSKY_CONFIG_OVERLAY_SHA256
+            valueFrom:
+              configMapKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_CONFIG_OVERLAY_SHA256
+      - contains:
+          path: "spec.template.spec.initContainers[0].env"
+          content:
+            name: INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+            valueFrom:
+              configMapKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+      - lengthEqual: {path: "spec.template.spec.initContainers[0].env", count: 2}
+
+  - it: gives the barrier no secrets and only a read-only view of the sentinel area
+    template: edge-deployment.yaml
+    asserts:
+      - notExists:
+          path: "spec.template.spec.initContainers[0].envFrom"
+      - lengthEqual: {path: "spec.template.spec.initContainers[0].volumeMounts", count: 1}
+      - equal:
+          path: "spec.template.spec.initContainers[0].volumeMounts[0].mountPath"
+          value: /var/www/html/.state
+      - equal:
+          path: "spec.template.spec.initContainers[0].volumeMounts[0].subPath"
+          value: .state
+      - equal:
+          path: "spec.template.spec.initContainers[0].volumeMounts[0].readOnly"
+          value: true
+
+  # Daemon hardening and mounts
+  - it: keeps the daemon restricted in every mode, including hostpath sensors
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: hostpath
+      edge.sensors.enabled: true
+      edge.supplementalGroups: [20]
+      edge.devices.sensors.hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.runAsNonRoot'
+          value: true
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.runAsUser'
+          value: 10001
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.allowPrivilegeEscalation'
+          value: false
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.capabilities.drop[0]'
+          value: ALL
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.seccompProfile.type'
+          value: RuntimeDefault
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].securityContext.privileged'
+
+  - it: gives the daemon only the application subtree and no default liveness probe
+    template: edge-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="data")].mountPath'
+          value: /var/www/html/allsky
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="data")].subPath'
+          value: allsky
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="data")].readOnly'
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].livenessProbe'
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config
+            emptyDir:
+              medium: Memory
+
+  - it: adds the opt-in fail-closed freshness probe only when asked
+    template: edge-deployment.yaml
+    set:
+      edge.freshnessProbe.enabled: true
+      edge.freshnessProbe.maxAgeSeconds: 1200
+    asserts:
+      - matchRegex:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].livenessProbe.exec.command[2]'
+          pattern: "-lt 1200 \\]$"
+      # Fail-closed: a missing latest image is stale, not "not yet applicable".
+      - matchRegex:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].livenessProbe.exec.command[2]'
+          pattern: '\[ -n "\$newest" \] \|\| exit 1'
+
+  - it: gives the daemon its database keys and nothing else
+    template: edge-deployment.yaml
+    set:
+      oidc.enabled: true
+      oidc.clientId: test-client
+      oidc.clientSecret: test-client-secret
+      oidc.discoveryEndpoint: https://idp.example.com/.well-known/openid-configuration
+      adminUser.username: admin
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - lengthEqual:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].env'
+          count: 3
+      - contains:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].env'
+          content:
+            name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: MARIADB_PASSWORD
+      - notContains:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].env'
+          content: {name: INDIALLSKY_OIDC_CLIENT_SECRET}
+          any: true
+      - notContains:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].env'
+          content: {name: INDIALLSKY_WEB_PASS}
+          any: true
+      - notContains:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].envFrom'
+          content: {secretRef: {name: test-release-indi-allsky-env}}
+          any: true
+      - notExists: {path: 'spec.template.spec.volumes[?(@.secret)]'}
+
+  # Device mode: hostpath
+  - it: pins to the camera node and privileges only indiserver for a local camera
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - equal:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/camera"]'
+          value: "true"
+      - notExists:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/sensors"]'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.privileged'
+          value: true
+      # Privileged, but never root: CAP_DAC_OVERRIDE already covers the device node.
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.runAsUser'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].volumeMounts[0].mountPath'
+          value: /dev/bus/usb
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: camera-device-0
+            hostPath:
+              path: /dev/bus/usb
+              type: Directory
+
+  - it: renders the exact hostPath type and readOnly an operator states
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: hostpath
+      edge.sensors.enabled: true
+      edge.devices.sensors.hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+        - path: /sys/bus/w1
+          type: Directory
+          readOnly: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: sensor-device-0
+            hostPath:
+              path: /dev/i2c-1
+              type: CharDevice
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: sensor-device-1
+            hostPath:
+              path: /sys/bus/w1
+              type: Directory
+      # The one-wire sysfs tree is read-only, and the chart renders exactly that
+      # rather than inferring access from the path.
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="sensor-device-1")].readOnly'
+          value: true
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="sensor-device-0")].readOnly'
+          value: false
+      # Sensor devices belong to the daemon, never to the INDI server.
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].volumeMounts'
+
+  - it: pins to the sensor node independently of the camera
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: hostpath
+      edge.sensors.enabled: true
+      edge.devices.sensors.hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+    asserts:
+      - equal:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/sensors"]'
+          value: "true"
+      - notExists:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/camera"]'
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.privileged'
+
+  - it: applies supplemental groups only for explicit hostPath access
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: hostpath
+      edge.supplementalGroups: [20, 997]
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - equal: {path: "spec.template.spec.securityContext.supplementalGroups[0]", value: 20}
+      - equal: {path: "spec.template.spec.securityContext.supplementalGroups[1]", value: 997}
+
+  # Device mode: device-plugin
+  - it: schedules from extended resources without a camera label or privilege
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: device-plugin
+      edge.devices.camera.resources:
+        squat.ai/asi-camera: 1
+    asserts:
+      - notExists: {path: spec.template.spec.nodeSelector}
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.privileged'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].securityContext.allowPrivilegeEscalation'
+          value: false
+      - notExists:
+          path: 'spec.template.spec.volumes[?(@.hostPath)]'
+
+  # Extended resources must land in both requests and limits without replacing
+  # the base cpu/memory the operator configured.
+  - it: merges device resources into the right container without clobbering
+    template: edge-deployment.yaml
+    set:
+      edge.devices.mode: device-plugin
+      edge.sensors.enabled: true
+      edge.devices.camera.resources:
+        squat.ai/asi-camera: 1
+      edge.devices.sensors.resources:
+        squat.ai/i2c: 1
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].resources.limits["squat.ai/asi-camera"]'
+          value: 1
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].resources.requests["squat.ai/asi-camera"]'
+          value: 1
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].resources.limits.cpu'
+          value: 250m
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].resources.requests.memory'
+          value: 256Mi
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].resources.limits["squat.ai/i2c"]'
+          value: 1
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].resources.requests["squat.ai/i2c"]'
+          value: 1
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].resources.limits.memory'
+          value: 1Gi
+      # The camera resource belongs to the INDI server, not to the daemon.
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].resources.limits["squat.ai/asi-camera"]'
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].resources.limits["squat.ai/i2c"]'
+
+  # External INDI server
+  - it: removes the sidecar entirely in external indiserver mode
+    template: edge-deployment.yaml
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: 7624
+    asserts:
+      - lengthEqual: {path: spec.template.spec.containers, count: 1}
+      - equal: {path: "spec.template.spec.containers[0].name", value: daemon}
+      - notExists: {path: spec.template.spec.nodeSelector}
+
+  - it: keeps independently enabled sensors working with an external INDI server
+    template: edge-deployment.yaml
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      edge.devices.mode: hostpath
+      edge.sensors.enabled: true
+      edge.devices.sensors.hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+    asserts:
+      - lengthEqual: {path: spec.template.spec.containers, count: 1}
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="sensor-device-0")].mountPath'
+          value: /dev/i2c-1
+      - equal:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/sensors"]'
+          value: "true"
+      - notExists:
+          path: 'spec.template.spec.nodeSelector["indi-allsky.io/camera"]'
+
+  - it: points the overlay at the external INDI server for the whole rollout
+    template: configmap-env.yaml
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      indiserver.external.port: 7625
+    asserts:
+      - notEqual:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+
+  # indiserver probes
+  - it: probes indiserver on its INDI port only
+    template: edge-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].ports[0].containerPort'
+          value: 7624
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].startupProbe.tcpSocket.port'
+          value: indi
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].readinessProbe.tcpSocket.port'
+          value: indi
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].livenessProbe.tcpSocket.port'
+          value: indi
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].readinessProbe.httpGet'
+
+  - it: passes only the configured drivers to indiserver
+    template: edge-deployment.yaml
+    set:
+      indiserver.ccdDriver: indi_asi_ccd
+      indiserver.gpsDriver: indi_gpsd
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].env'
+          content: {name: INDIALLSKY_INDI_CCD_DRIVER, value: indi_asi_ccd}
+      - contains:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].env'
+          content: {name: INDIALLSKY_INDI_GPS_DRIVER, value: indi_gpsd}
+      - lengthEqual:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].env'
+          count: 2
+
+  - it: omits the GPS driver when none is configured
+    template: edge-deployment.yaml
+    asserts:
+      - lengthEqual:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].env'
+          count: 1
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].envFrom'
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="indiserver")].volumeMounts'
+
+  # Capture scratch space
+  - it: adds no scratch volume when the image default is kept
+    template: edge-deployment.yaml
+    asserts:
+      - lengthEqual: {path: spec.template.spec.volumes, count: 3}
+      - notExists:
+          path: 'spec.template.spec.volumes[?(@.name=="capture-scratch")]'
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: scratch
+            emptyDir: {}
+
+  - it: reuses the existing scratch emptyDir when the scratch path is /tmp
+    template: edge-deployment.yaml
+    set:
+      edge.captureTmpDir: /tmp
+    asserts:
+      - notExists:
+          path: 'spec.template.spec.volumes[?(@.name=="capture-scratch")]'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="scratch")].mountPath'
+          value: /tmp
+
+  - it: adds a dedicated emptyDir for any other validated scratch path
+    template: edge-deployment.yaml
+    set:
+      edge.captureTmpDir: /var/tmp/indi-allsky-capture
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: capture-scratch
+            emptyDir: {}
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="daemon")].volumeMounts[?(@.name=="capture-scratch")].mountPath'
+          value: /var/tmp/indi-allsky-capture
+
+  - it: maps the dark-capture values onto the frozen container environment
+    template: configmap-env.yaml
+    set:
+      edge.darks.enabled: true
+      edge.darks.daytime: false
+      edge.darks.bitmax: 12
+      edge.darks.mode: sigmaclip
+      edge.captureTmpDir: /var/tmp/indi-allsky-capture
+    asserts:
+      - equal: {path: data.INDIALLSKY_DARK_CAPTURE_ENABLE, value: "true"}
+      - equal: {path: data.INDIALLSKY_DARK_CAPTURE_DAYTIME, value: "false"}
+      - equal: {path: data.INDIALLSKY_DARK_CAPTURE_BITMAX, value: "12"}
+      - equal: {path: data.INDIALLSKY_DARK_CAPTURE_MODE, value: sigmaclip}
+      - equal: {path: data.CAPTURE_TMPDIR, value: /var/tmp/indi-allsky-capture}

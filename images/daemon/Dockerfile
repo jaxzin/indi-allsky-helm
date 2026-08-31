@@ -32,7 +32,9 @@ RUN rm -f /etc/sudoers /etc/sudoers.d/* \
 
 # validators.sh is sourced, never executed, so it is not marked executable.
 COPY --chown=10001:10001 --chmod=644 shared/validators.sh /home/allsky/
-COPY --chown=10001:10001 --chmod=755 shared/render-flask-config.sh daemon/entrypoint-daemon.sh /home/allsky/
+COPY --chown=10001:10001 --chmod=755 \
+    shared/render-flask-config.sh daemon/entrypoint-daemon.sh daemon/wait-overlay.sh \
+    /home/allsky/
 
 # Numeric USER: kubelet cannot verify runAsNonRoot against a named user
 # ("container has runAsNonRoot and image has non-numeric user").

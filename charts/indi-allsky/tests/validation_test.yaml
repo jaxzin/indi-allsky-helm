@@ -931,3 +931,277 @@ tests:
         injected: true
     asserts:
       - failedTemplate: {errorMessage: mariadb.persistence.storageClassName must be a valid DNS subdomain StorageClass name}
+
+  - it: rejects PriorityClass reference mode without a name
+    set:
+      edge.priorityClass.mode: reference
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.name is required when edge.priorityClass.mode=reference — that mode uses a class owned by external IaC/CI and renders none itself"
+
+  - it: rejects a PriorityClass name in create mode
+    set:
+      edge.priorityClass.name: platform-owned-capture
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.name must be empty when edge.priorityClass.mode=create — only reference mode names an externally owned class"
+
+  - it: rejects a PriorityClass name in disabled mode
+    set:
+      edge.priorityClass.mode: disabled
+      edge.priorityClass.name: platform-owned-capture
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.name must be empty when edge.priorityClass.mode=disabled — only reference mode names an externally owned class"
+
+  - it: rejects an unknown PriorityClass mode
+    set:
+      edge.priorityClass.mode: enabled
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.mode must be one of: create, reference, disabled"
+
+  - it: rejects an unknown PriorityClass preemption policy
+    set:
+      edge.priorityClass.preemptionPolicy: Always
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.preemptionPolicy must be one of: PreemptLowerPriority, Never"
+
+  # Kubernetes reserves everything above HighestUserDefinablePriority for
+  # system-critical classes and rejects the object at admission.
+  - it: rejects a PriorityClass value above the Kubernetes user-priority ceiling
+    set:
+      edge.priorityClass.value: 1000000001
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.value must be <= 1000000000 (Kubernetes reserves higher values for system-critical classes)"
+
+  - it: accepts the Kubernetes user-priority ceiling itself
+    set:
+      edge.priorityClass.value: 1000000000
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: rejects a non-positive PriorityClass value
+    set:
+      edge.priorityClass.value: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.value must be >= 1"
+
+  - it: rejects a fractional PriorityClass value
+    set:
+      edge.priorityClass.value: 1000.5
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.priorityClass.value must be a whole number >= 1"
+
+  - it: rejects a bare-string host device entry
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths: ["/dev/bus/usb"]
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths[0] must be an object with exactly the fields path, type and readOnly"
+
+  - it: rejects a host device entry missing readOnly
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths[0] must contain exactly the fields path, type and readOnly"
+
+  - it: rejects a relative host device path
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths[0].path must be an absolute path with no whitespace"
+
+  - it: rejects an unsupported host device type
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Socket
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths[0].type must be one of: Directory, CharDevice"
+
+  - it: rejects a non-boolean host device readOnly
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: "false"
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths[0].readOnly must be a boolean"
+
+  - it: rejects sensors without an access mechanism
+    set:
+      edge.sensors.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.sensors.enabled=true requires edge.devices.mode=hostpath or device-plugin — mode=none provides no sensor access mechanism"
+
+  - it: rejects camera host paths in the default no-device mode
+    set:
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.* must be empty when edge.devices.mode=none — set mode to hostpath or device-plugin to attach a camera"
+
+  - it: rejects hostpath mode with no host paths at all
+    set:
+      edge.devices.mode: hostpath
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.mode=hostpath requires at least one entry in edge.devices.camera.hostPaths or edge.devices.sensors.hostPaths"
+
+  - it: rejects device-plugin mode without a camera resource
+    set:
+      edge.devices.mode: device-plugin
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.mode=device-plugin requires edge.devices.camera.resources, e.g. {squat.ai/asi-camera: 1}"
+
+  - it: rejects extended resources in hostpath mode
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+      edge.devices.camera.resources:
+        squat.ai/asi-camera: 1
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.*.resources must be empty when edge.devices.mode=hostpath — extended resources are only scheduled in device-plugin mode"
+
+  - it: rejects host paths in device-plugin mode
+    set:
+      edge.devices.mode: device-plugin
+      edge.devices.camera.resources:
+        squat.ai/asi-camera: 1
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.*.hostPaths must be empty when edge.devices.mode=device-plugin — host paths are only mounted in hostpath mode"
+
+  - it: rejects local camera devices when the INDI server is external
+    set:
+      indiserver.mode: external
+      indiserver.external.host: indi.example.com
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.camera.hostPaths must be empty when indiserver.mode=external — the camera is attached to the external INDI server, not to this pod"
+
+  - it: rejects supplemental groups outside hostpath mode
+    set:
+      edge.supplementalGroups: [20]
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.supplementalGroups must be empty unless edge.devices.mode=hostpath — group ids only grant access to host device nodes"
+
+  - it: rejects a non-integer supplemental group
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.camera.hostPaths:
+        - path: /dev/bus/usb
+          type: Directory
+          readOnly: false
+      edge.supplementalGroups: ["dialout"]
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.supplementalGroups[0] must be a whole number >= 0"
+
+  - it: rejects sensor host paths while sensors are disabled
+    set:
+      edge.devices.mode: hostpath
+      edge.devices.sensors.hostPaths:
+        - path: /dev/i2c-1
+          type: CharDevice
+          readOnly: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.devices.sensors.hostPaths requires edge.sensors.enabled=true — otherwise the mounts would be rendered and never used"
+
+  - it: rejects a capture scratch path that would shadow the rendered config
+    set:
+      edge.captureTmpDir: /etc/indi-allsky/scratch
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.captureTmpDir must not overlap /etc/indi-allsky"
+
+  - it: rejects a capture scratch path that would shadow the data volume
+    set:
+      edge.captureTmpDir: /var/www/html
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.captureTmpDir must not overlap /var/www/html"
+
+  - it: rejects a capture scratch path that would swallow the data volume
+    set:
+      edge.captureTmpDir: /var/www
+    asserts:
+      - failedTemplate:
+          errorMessage: "edge.captureTmpDir must not overlap /var/www/html"
+
+  - it: rejects a non-boolean networkPolicy toggle
+    set:
+      networkPolicy.enabled: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: "networkPolicy.enabled must be a boolean"
+
+  - it: rejects an out-of-range web Service port
+    set:
+      web.service.port: 70000
+    asserts:
+      - failedTemplate:
+          errorMessage: "web.service.port must be <= 65535"
+
+  - it: rejects an enabled Ingress with no host
+    set:
+      web.ingress.enabled: true
+      web.ingress.host: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "web.ingress.host must be set and non-empty"
+
+  - it: rejects an Ingress host that is not a DNS name
+    set:
+      web.ingress.enabled: true
+      web.ingress.host: "Allsky Example"
+    asserts:
+      - failedTemplate:
+          errorMessage: "web.ingress.host must be a lowercase DNS hostname, optionally wildcarded as *.example.com"
+
+  - it: accepts a wildcard Ingress host
+    set:
+      web.ingress.enabled: true
+      web.ingress.host: "*.example.com"
+    asserts:
+      - hasDocuments: {count: 0}

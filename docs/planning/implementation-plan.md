@@ -1,5 +1,12 @@
 # indi-allsky-helm Chart Repo Implementation Plan (Plan A)
 
+> **A6/A7 status:** the web and edge workloads are implemented. Any A6/A7
+> snippet below predates the maintainer-approved "Option A" contract and is
+> illustrative history only — the binding descriptions are the acceptance
+> criteria on issues #5, #6, #16 and #22, and the living docs
+> ([configuration](../configuration.md), [container contract](../container-contract.md),
+> [node contract](../node-contract.md)).
+
 > **Provenance:** migrated 2026-08-25 from the author's private planning workspace, with operator-specific details (private hostnames, internal repo and service names) genericized. The live execution record is this repository's issue tracker (issues #1–#10); this is a historical design record, not living documentation.
 
 ## Execution status (2026-08-25)

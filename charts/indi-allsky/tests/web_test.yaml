@@ -1,0 +1,547 @@
+suite: web workload, serving path and Ingress
+values:
+  - a5-values.yaml
+templates:
+  - web-deployment.yaml
+  - web-service.yaml
+  - web-ingress.yaml
+  - configmap-nginx.yaml
+  - configmap-env.yaml
+release:
+  name: test-release
+tests:
+  # One writer. migrate.sh owns the Alembic tree and `config.py bootstrap`
+  # seeds one configuration row; a surge replica would run a second migrate
+  # initContainer against both.
+  - it: renders exactly one replica that is replaced, never surged
+    template: web-deployment.yaml
+    asserts:
+      - equal: {path: metadata.name, value: test-release-indi-allsky-web}
+      - equal: {path: spec.replicas, value: 1}
+      - equal: {path: spec.strategy.type, value: Recreate}
+      - notExists: {path: spec.strategy.rollingUpdate}
+      - equal: {path: spec.template.spec.automountServiceAccountToken, value: false}
+
+  - it: rolls the pod when any input it reads at start changes
+    template: web-deployment.yaml
+    asserts:
+      - exists:
+          path: 'spec.template.metadata.annotations["checksum/env-configmap"]'
+      - exists:
+          path: 'spec.template.metadata.annotations["checksum/overlay-configmap"]'
+      - exists:
+          path: 'spec.template.metadata.annotations["checksum/nginx-configmap"]'
+      - equal:
+          path: 'spec.template.metadata.annotations["checksum/overlay-configmap"]'
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+
+  - it: changes the overlay checksum annotation when the overlay changes
+    template: web-deployment.yaml
+    set:
+      appConfig:
+        CCD_EXPOSURE_MAX: 15
+    asserts:
+      - notEqual:
+          path: 'spec.template.metadata.annotations["checksum/overlay-configmap"]'
+          value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
+
+  - it: honours operator pod annotations alongside the checksums
+    template: web-deployment.yaml
+    set:
+      web.podAnnotations:
+        reloader.stakater.com/auto: "true"
+    asserts:
+      - equal:
+          path: 'spec.template.metadata.annotations["reloader.stakater.com/auto"]'
+          value: "true"
+      - exists:
+          path: 'spec.template.metadata.annotations["checksum/env-configmap"]'
+
+  - it: runs migrate then static-copy, and gunicorn then nginx
+    template: web-deployment.yaml
+    asserts:
+      - equal: {path: "spec.template.spec.initContainers[0].name", value: migrate}
+      - equal: {path: "spec.template.spec.initContainers[1].name", value: static-copy}
+      - lengthEqual: {path: spec.template.spec.initContainers, count: 2}
+      - equal: {path: "spec.template.spec.containers[0].name", value: gunicorn}
+      - equal: {path: "spec.template.spec.containers[1].name", value: nginx}
+      - lengthEqual: {path: spec.template.spec.containers, count: 2}
+
+  - it: hardens the pod and every container as uid 10001
+    template: web-deployment.yaml
+    asserts:
+      - equal: {path: spec.template.spec.securityContext.runAsNonRoot, value: true}
+      - equal: {path: spec.template.spec.securityContext.runAsUser, value: 10001}
+      - equal: {path: spec.template.spec.securityContext.runAsGroup, value: 10001}
+      # Without fsGroup the emptyDir at /etc/indi-allsky arrives root-owned 0755
+      # and render-flask-config.sh cannot write flask.json into it.
+      - equal: {path: spec.template.spec.securityContext.fsGroup, value: 10001}
+      - equal: {path: spec.template.spec.securityContext.seccompProfile.type, value: RuntimeDefault}
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].securityContext.allowPrivilegeEscalation'
+          value: false
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="static-copy")].securityContext.capabilities.drop[0]'
+          value: ALL
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].securityContext.runAsUser'
+          value: 10001
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].securityContext.runAsUser'
+          value: 10001
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].securityContext.seccompProfile.type'
+          value: RuntimeDefault
+      - notExists:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].securityContext.privileged'
+
+  # gunicorn binds 127.0.0.1 only, so it must advertise no port a Service or
+  # policy could be aimed at, and its probes must originate inside the container.
+  - it: never advertises the loopback gunicorn port and probes it from inside
+    template: web-deployment.yaml
+    asserts:
+      - notExists: {path: 'spec.template.spec.containers[?(@.name=="gunicorn")].ports'}
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].startupProbe.exec.command[2]'
+          value: "exec 3<>/dev/tcp/127.0.0.1/8000"
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].readinessProbe.exec.command[2]'
+          value: "exec 3<>/dev/tcp/127.0.0.1/8000"
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].livenessProbe.exec.command[2]'
+          value: "exec 3<>/dev/tcp/127.0.0.1/8000"
+      - notExists: {path: 'spec.template.spec.containers[?(@.name=="gunicorn")].readinessProbe.tcpSocket'}
+      - notExists: {path: 'spec.template.spec.containers[?(@.name=="gunicorn")].readinessProbe.httpGet'}
+
+  - it: gives nginx the only advertised port and its own health endpoint
+    template: web-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].ports[0].name'
+          value: http
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].ports[0].containerPort'
+          value: 8080
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].readinessProbe.httpGet.path'
+          value: /healthz
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].readinessProbe.httpGet.port'
+          value: http
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].livenessProbe.httpGet.path'
+          value: /healthz
+
+  - it: keeps the nginx image configurable
+    template: web-deployment.yaml
+    set:
+      web.nginx.image: mirror.example.com/nginx:1.29-alpine
+    asserts:
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].image'
+          value: mirror.example.com/nginx:1.29-alpine
+
+  # Configuration and storage
+  - it: keeps the rendered configuration off the node disk
+    template: web-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: config
+            emptyDir:
+              medium: Memory
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: overlay
+            configMap:
+              name: test-release-indi-allsky-config-overlay
+
+  # A subPath ConfigMap mount resolves once at container start and never
+  # receives an update, which is why the overlay gets its own volume.
+  - it: projects the overlay on its own volume without subPath
+    template: web-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].volumeMounts[?(@.name=="overlay")].mountPath'
+          value: /etc/indi-allsky-overlay
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].volumeMounts[?(@.name=="overlay")].readOnly'
+          value: true
+      - notExists:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].volumeMounts[?(@.name=="overlay")].subPath'
+
+  - it: points the migration path at the canonical overlay bytes the checksum covers
+    template: configmap-env.yaml
+    asserts:
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY
+          value: /etc/indi-allsky-overlay/config-overlay.canonical.json
+      - equal:
+          path: data.INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL
+          value: /var/www/html/.state/config-overlay.applied
+
+  # Minimum PVC visibility. Only migrate sees the whole claim; the serving
+  # containers see the images subtree read-only; static-copy sees no data at all.
+  - it: gives each container the least data-volume visibility it can work with
+    template: web-deployment.yaml
+    asserts:
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].volumeMounts[?(@.name=="data")].mountPath'
+          value: /var/www/html
+      - notExists:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].volumeMounts[?(@.name=="data")].readOnly'
+      - notExists:
+          path: 'spec.template.spec.initContainers[?(@.name=="static-copy")].volumeMounts[?(@.name=="data")]'
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].volumeMounts[?(@.name=="data")].subPath'
+          value: allsky/images
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].volumeMounts[?(@.name=="data")].readOnly'
+          value: true
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].volumeMounts[?(@.name=="data")].subPath'
+          value: allsky/images
+      - equal:
+          path: 'spec.template.spec.containers[?(@.name=="nginx")].volumeMounts[?(@.name=="data")].readOnly'
+          value: true
+
+  # Secret projection
+  - it: never projects the application Secret through a blanket envFrom
+    template: web-deployment.yaml
+    asserts:
+      - notContains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].envFrom'
+          content: {secretRef: {name: test-release-indi-allsky-env}}
+          any: true
+      - notContains:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].envFrom'
+          content: {secretRef: {name: test-release-indi-allsky-env}}
+          any: true
+      - equal:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].envFrom[0].configMapRef.name'
+          value: test-release-indi-allsky-env
+      - lengthEqual:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].envFrom'
+          count: 1
+
+  - it: gives migrate the required database and Flask keys only, by default
+    template: web-deployment.yaml
+    asserts:
+      - lengthEqual:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          count: 3
+      - contains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          content:
+            name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: MARIADB_PASSWORD
+      - contains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          content:
+            name: INDIALLSKY_FLASK_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_FLASK_SECRET_KEY
+
+  - it: adds the OIDC and admin-seed keys only to the container that uses them
+    template: web-deployment.yaml
+    set:
+      oidc.enabled: true
+      oidc.clientId: test-client
+      oidc.clientSecret: test-client-secret
+      oidc.discoveryEndpoint: https://idp.example.com/.well-known/openid-configuration
+      adminUser.username: admin
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - contains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          content:
+            name: INDIALLSKY_WEB_PASS
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_WEB_PASS
+                optional: true
+      - contains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          content:
+            name: INDIALLSKY_OIDC_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_OIDC_CLIENT_SECRET
+                optional: true
+      # The long-lived serving process has no use for the bootstrap password.
+      - notContains:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].env'
+          content: {name: INDIALLSKY_WEB_PASS}
+          any: true
+      - contains:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].env'
+          content:
+            name: INDIALLSKY_OIDC_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: test-release-indi-allsky-env
+                key: INDIALLSKY_OIDC_CLIENT_SECRET
+                optional: true
+
+  - it: gives static-copy and nginx no application secrets at all
+    template: web-deployment.yaml
+    set:
+      oidc.enabled: true
+      oidc.clientId: test-client
+      oidc.clientSecret: test-client-secret
+      oidc.discoveryEndpoint: https://idp.example.com/.well-known/openid-configuration
+      adminUser.username: admin
+      credentials.adminPassword: test-admin-password
+    asserts:
+      - notExists: {path: 'spec.template.spec.initContainers[?(@.name=="static-copy")].env'}
+      - notExists: {path: 'spec.template.spec.initContainers[?(@.name=="static-copy")].envFrom'}
+      - notExists: {path: 'spec.template.spec.containers[?(@.name=="nginx")].env'}
+      - notExists: {path: 'spec.template.spec.containers[?(@.name=="nginx")].envFrom'}
+
+  # The MariaDB root Secret is a separate recovery credential that reaches the
+  # database container only. Pinning the exact volume set is what makes that
+  # testable structurally: any extra Secret volume — root credentials or
+  # otherwise — changes the count. render-validation-matrix.sh additionally
+  # greps the whole rendered release for the root Secret's name.
+  - it: mounts exactly the volumes the web pod needs and no Secret volume
+    template: web-deployment.yaml
+    asserts:
+      - lengthEqual: {path: spec.template.spec.volumes, count: 6}
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: data
+            persistentVolumeClaim:
+              claimName: test-release-indi-allsky-data
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: nginx-config
+            configMap:
+              name: test-release-indi-allsky-nginx
+      - contains:
+          path: spec.template.spec.volumes
+          content: {name: static, emptyDir: {}}
+      - contains:
+          path: spec.template.spec.volumes
+          content: {name: nginx-scratch, emptyDir: {}}
+      - notExists: {path: 'spec.template.spec.volumes[?(@.secret)]'}
+
+  - it: resolves an existing application Secret in every allowlist
+    template: web-deployment.yaml
+    set:
+      credentials.existingSecret: existing-app-secret
+      credentials.flaskSecretKey: ""
+      credentials.flaskPasswordKey: ""
+      credentials.mariadbPassword: ""
+    asserts:
+      - contains:
+          path: 'spec.template.spec.initContainers[?(@.name=="migrate")].env'
+          content:
+            name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: existing-app-secret
+                key: MARIADB_PASSWORD
+      - contains:
+          path: 'spec.template.spec.containers[?(@.name=="gunicorn")].env'
+          content:
+            name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: existing-app-secret
+                key: MARIADB_PASSWORD
+
+  # nginx configuration
+  - it: serves only the images subtree and the copied static assets
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'alias /var/www/html/allsky/images;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'alias /usr/share/nginx/indi-allsky-static;'
+      # No document root, and a terminal 404 for anything else.
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: '\n\s+root '
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)location / \{\s+return 404;'
+
+  - it: returns 404 for every dot path, including the state sibling
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)location ~ /\\\. \{\s+return 404;'
+      # 403 would confirm the path exists; the point is to reveal nothing.
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: 'deny all'
+      # The only two aliases in the file, so nothing outside them is servable.
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)^(?:[^\n]*\n)*?\s+alias /var/www/html/allsky/images;'
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: 'autoindex on'
+
+  - it: proxies to loopback gunicorn and preserves TLS-aware forwarded proto
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'server 127\.0\.0\.1:8000 fail_timeout=0;'
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: '0\.0\.0\.0:8000'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)map \$http_x_forwarded_proto \$indi_allsky_forwarded_proto \{\s+default \$scheme;\s+http\s+http;\s+https\s+https;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'proxy_set_header X-Forwarded-Proto \$indi_allsky_forwarded_proto;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;'
+
+  # nginx defaults to `absolute_redirect on`, which rewrites every relative
+  # redirect — the site-root 302 AND the implicit trailing-slash 301 on image
+  # subdirectories — into an absolute URL built from the request Host and this
+  # server's listen port. Behind a TLS-terminating Ingress that sends browsers
+  # to http://host:8080/..., a wrong scheme on an unpublished port. It looks
+  # correct through `kubectl port-forward`, where host:8080 is genuinely the
+  # client's address, so only a non-loopback Host header exposes it.
+  - it: keeps every redirect relative to the front door, not to this pod
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)server \{.*?absolute_redirect off;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'return 302 /indi-allsky;'
+      # The redirect target must stay a path: an absolute URL written here
+      # would defeat the directive above.
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: 'return 30[12] https?://'
+      # `proxy_redirect off` keeps gunicorn's own Location headers untouched;
+      # the application builds those from Host plus X-Forwarded-Proto.
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'proxy_redirect off;'
+
+  - it: exposes a health endpoint that does not depend on the application
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)location = /healthz \{[^}]*return 200 "ok\\n";'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'listen 8080;'
+
+  - it: keeps every nginx writable path inside the pod scratch volume
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'pid /tmp/nginx\.pid;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'client_body_temp_path /tmp/'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'proxy_temp_path /tmp/'
+
+  # Service
+  - it: targets the nginx port through a DNS-1035-safe Service name
+    template: web-service.yaml
+    asserts:
+      - equal: {path: metadata.name, value: test-release-indi-allsky-web}
+      - equal: {path: spec.type, value: ClusterIP}
+      - equal: {path: "spec.ports[0].port", value: 8080}
+      - equal: {path: "spec.ports[0].targetPort", value: http}
+      - equal:
+          path: 'spec.selector["app.kubernetes.io/component"]'
+          value: web
+
+  - it: honours a configured Service port while still targeting nginx
+    template: web-service.yaml
+    set:
+      web.service.port: 80
+    asserts:
+      - equal: {path: "spec.ports[0].port", value: 80}
+      - equal: {path: "spec.ports[0].targetPort", value: http}
+
+  # A 53-character release name is helm's maximum. Suffixed names must still
+  # fit the 63-character DNS-1035 Service limit.
+  - it: keeps the suffixed Service name inside the DNS-1035 limit at the boundary
+    template: web-service.yaml
+    release:
+      name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    asserts:
+      - matchRegex: {path: metadata.name, pattern: '^.{1,63}$'}
+      - matchRegex: {path: metadata.name, pattern: '-[0-9a-f]{8}-web$'}
+
+  - it: keeps a digit-leading release name a legal Service name
+    template: web-service.yaml
+    release:
+      name: 1observatory
+    asserts:
+      - matchRegex: {path: metadata.name, pattern: '^[a-z]'}
+
+  # Ingress
+  - it: renders no Ingress by default
+    template: web-ingress.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: renders the configured single-host Ingress when enabled
+    template: web-ingress.yaml
+    set:
+      web.ingress.enabled: true
+      web.ingress.className: nginx
+      web.ingress.host: allsky.example.com
+      web.ingress.annotations:
+        cert-manager.io/cluster-issuer: letsencrypt
+      web.ingress.tls:
+        - hosts: [allsky.example.com]
+          secretName: allsky-tls
+    asserts:
+      - hasDocuments: {count: 1}
+      - equal: {path: spec.ingressClassName, value: nginx}
+      - equal: {path: "spec.rules[0].host", value: allsky.example.com}
+      - equal: {path: "spec.rules[0].http.paths[0].pathType", value: Prefix}
+      - equal:
+          path: "spec.rules[0].http.paths[0].backend.service.name"
+          value: test-release-indi-allsky-web
+      - equal:
+          path: "spec.rules[0].http.paths[0].backend.service.port.name"
+          value: http
+      - equal: {path: "spec.tls[0].secretName", value: allsky-tls}
+      - equal:
+          path: 'metadata.annotations["cert-manager.io/cluster-issuer"]'
+          value: letsencrypt
+
+  - it: omits the class name and TLS when the cluster supplies defaults
+    template: web-ingress.yaml
+    set:
+      web.ingress.enabled: true
+      web.ingress.host: allsky.example.com
+    asserts:
+      - notExists: {path: spec.ingressClassName}
+      - notExists: {path: spec.tls}
+      - notExists: {path: metadata.annotations}

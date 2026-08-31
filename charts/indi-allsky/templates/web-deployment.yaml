@@ -1,0 +1,252 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- $appUid := include "indi-allsky.appUid" . | int -}}
+{{- $gunicornPort := include "indi-allsky.gunicornPort" . | int -}}
+{{- $nginxPort := include "indi-allsky.nginxPort" . | int -}}
+{{- $dataMountPath := include "indi-allsky.dataMountPath" . -}}
+{{- $imagePath := include "indi-allsky.imagePath" . -}}
+{{- /* The images subtree relative to the claim root, for the narrowed
+       read-only mounts in the gunicorn and nginx containers. */ -}}
+{{- $imageSubPath := trimPrefix (printf "%s/" $dataMountPath) $imagePath -}}
+{{- $configPath := include "indi-allsky.configPath" . -}}
+{{- $overlayMountPath := include "indi-allsky.overlayMountPath" . -}}
+{{- $staticSourcePath := include "indi-allsky.staticSourcePath" . -}}
+{{- $staticServePath := include "indi-allsky.staticServePath" . -}}
+{{- $webImage := include "indi-allsky.image" (dict "ctx" . "name" "web") -}}
+{{- /*
+Fixed probe timing. Named constants rather than public values: the numbers
+describe how this pod's own containers come up, and #5 explicitly rules out
+adding probe-timing knobs. gunicorn's startup budget is generous because it
+imports the whole application; nginx serves a static string and is ready at
+once.
+*/ -}}
+{{- $terminationGracePeriodSeconds := 60 -}}
+{{- $gunicornStartupPeriodSeconds := 5 -}}
+{{- $gunicornStartupFailureThreshold := 60 -}}
+{{- $gunicornReadinessPeriodSeconds := 10 -}}
+{{- $gunicornReadinessFailureThreshold := 3 -}}
+{{- $gunicornLivenessPeriodSeconds := 20 -}}
+{{- $gunicornLivenessFailureThreshold := 6 -}}
+{{- $nginxReadinessPeriodSeconds := 10 -}}
+{{- $nginxReadinessFailureThreshold := 3 -}}
+{{- $nginxLivenessPeriodSeconds := 20 -}}
+{{- $nginxLivenessFailureThreshold := 6 -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "indi-allsky.webName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  {{- /*
+  Exactly one replica, and no public override. migrate.sh is a single-writer
+  schema step and `config.py bootstrap` seeds one configuration row; two of
+  either racing is the failure #16 exists to prevent. Recreate rather than
+  RollingUpdate for the same reason — a surge replica would run a second
+  migrate initContainer against the same Alembic tree while the old pod still
+  held the data volume. The advisory lock is the second layer, not a licence to
+  scale this out.
+  */}}
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "web") | nindent 8 }}
+      annotations:
+        {{- /*
+        A change to any of the three inputs this pod reads at start must roll
+        it. The env ConfigMap and the nginx config are only read at container
+        start; the overlay is read once by migrate.sh and then never re-read,
+        by design (see the snapshot in migrate-critical.sh).
+        */}}
+        checksum/env-configmap: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
+        checksum/overlay-configmap: {{ include "indi-allsky.overlayChecksum" . }}
+        checksum/nginx-configmap: {{ include (print $.Template.BasePath "/configmap-nginx.yaml") . | sha256sum }}
+        {{- with .Values.web.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $appUid }}
+        runAsGroup: {{ $appUid }}
+        {{- /*
+        fsGroup is not cosmetic. A volume mounted at /etc/indi-allsky shadows
+        the image's 0750 allsky-owned directory with a root-owned 0755 one, and
+        render-flask-config.sh then cannot write flask.json. The data volume
+        needs the same group for migrate.sh to create its directories.
+        */}}
+        fsGroup: {{ $appUid }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: migrate
+          image: {{ $webImage | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/home/allsky/migrate.sh"]
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          envFrom:
+            {{- /* Chart-owned non-secret settings only. The application Secret
+                   is never projected through envFrom — see the explicit
+                   allowlist below. */}}
+            - configMapRef:
+                name: {{ include "indi-allsky.envConfigMapName" . }}
+          env:
+            {{- include "indi-allsky.appSecretEnv" (dict "ctx" . "oidc" true "adminSeed" true) | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ $dataMountPath }}
+            - name: config
+              mountPath: {{ $configPath }}
+            - name: overlay
+              mountPath: {{ $overlayMountPath }}
+              readOnly: true
+        - name: static-copy
+          image: {{ $webImage | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- /*
+          The nginx sidecar serves upstream's Flask static assets, which live
+          in the web image's checkout. Copying them into a shared emptyDir is
+          what lets nginx serve them without mounting the application image or
+          running from it. Trailing /. copies the directory's contents, so the
+          alias in nginx.conf resolves without an extra path segment.
+          */}}
+          command: ["cp", "-a", "--", "{{ $staticSourcePath }}/.", "{{ $staticServePath }}/"]
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: static
+              mountPath: {{ $staticServePath }}
+      containers:
+        - name: gunicorn
+          image: {{ $webImage | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "indi-allsky.envConfigMapName" . }}
+          env:
+            {{- /* adminSeed deliberately false: the bootstrap password is only
+                   ever needed by the migrate initContainer, and the long-lived
+                   serving process has no use for it. */}}
+            {{- include "indi-allsky.appSecretEnv" (dict "ctx" . "oidc" true "adminSeed" false) | nindent 12 }}
+          {{- /*
+          No containerPort is declared. gunicorn binds 127.0.0.1 only, so
+          advertising a port would describe an endpoint that does not exist and
+          invite a Service or NetworkPolicy to be pointed at it.
+
+          The probes are exec, not tcpSocket, for the same reason: kubelet
+          probes connect to the pod IP, which loopback-bound gunicorn never
+          answers. bash's /dev/tcp opens the connection from inside the
+          container, where it is the correct address.
+          */}}
+          startupProbe:
+            exec:
+              command: ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/{{ $gunicornPort }}"]
+            periodSeconds: {{ $gunicornStartupPeriodSeconds }}
+            failureThreshold: {{ $gunicornStartupFailureThreshold }}
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/{{ $gunicornPort }}"]
+            periodSeconds: {{ $gunicornReadinessPeriodSeconds }}
+            failureThreshold: {{ $gunicornReadinessFailureThreshold }}
+          livenessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/{{ $gunicornPort }}"]
+            periodSeconds: {{ $gunicornLivenessPeriodSeconds }}
+            failureThreshold: {{ $gunicornLivenessFailureThreshold }}
+          {{- with .Values.web.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ $configPath }}
+            {{- /* subPath narrows the shared claim to the images subtree: the
+                   container cannot reach the .state sibling that holds the
+                   database dumps and the Alembic tree at all. */}}
+            - name: data
+              mountPath: {{ $imagePath }}
+              subPath: {{ $imageSubPath }}
+              readOnly: true
+        - name: nginx
+          image: {{ .Values.web.nginx.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "indi-allsky.restrictedSecurityContext" . | nindent 12 }}
+          {{- /* No envFrom and no env: this container terminates untrusted
+                 traffic and has no use for any application setting. */}}
+          ports:
+            - name: http
+              containerPort: {{ $nginxPort }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ $nginxReadinessPeriodSeconds }}
+            failureThreshold: {{ $nginxReadinessFailureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ $nginxLivenessPeriodSeconds }}
+            failureThreshold: {{ $nginxLivenessFailureThreshold }}
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: data
+              mountPath: {{ $imagePath }}
+              subPath: {{ $imageSubPath }}
+              readOnly: true
+            - name: static
+              mountPath: {{ $staticServePath }}
+              readOnly: true
+            {{- /* nginx runs as uid 10001, so its pid file and every temp path
+                   have to live somewhere writable. nginx.conf points all of
+                   them at this emptyDir. */}}
+            - name: nginx-scratch
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "indi-allsky.dataPvcName" . }}
+        - name: config
+          emptyDir:
+            {{- /* The rendered flask.json carries SECRET_KEY, PASSWORD_KEY, the
+                   database DSN and the OIDC client secret. Memory-backed keeps
+                   all of that off the node's disk. */}}
+            medium: Memory
+        - name: overlay
+          configMap:
+            {{- /* Its own volume, never a subPath inside the config emptyDir:
+                   subPath mounts resolve once at container start and never
+                   receive a ConfigMap update. */}}
+            name: {{ include "indi-allsky.overlayConfigMapName" . }}
+        - name: static
+          emptyDir: {}
+        - name: nginx-config
+          configMap:
+            name: {{ include "indi-allsky.nginxConfigMapName" . }}
+        - name: nginx-scratch
+          emptyDir: {}

@@ -1,0 +1,170 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- $gunicornPort := include "indi-allsky.gunicornPort" . -}}
+{{- $nginxPort := include "indi-allsky.nginxPort" . -}}
+{{- $urlPrefix := include "indi-allsky.appUrlPrefix" . -}}
+{{- $imagePath := include "indi-allsky.imagePath" . -}}
+{{- $staticPath := include "indi-allsky.staticServePath" . -}}
+{{- $imageCacheDays := 90 -}}
+{{- $staticCacheDays := 1 -}}
+{{- $proxyReadTimeoutSeconds := 600 -}}
+{{- $workerConnections := 1024 -}}
+{{- $maxBodySizeMegabytes := 1024 -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "indi-allsky.nginxConfigMapName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+data:
+  nginx.conf: |
+    # Rendered by the indi-allsky chart. This is the whole nginx configuration,
+    # replacing the image's own: the sidecar runs as uid 10001, so every path
+    # nginx writes has to live under the pod's writable emptyDirs rather than
+    # the image's nginx-owned /var/cache/nginx.
+    pid /tmp/nginx.pid;
+    worker_processes auto;
+    error_log /dev/stderr warn;
+
+    events {
+        worker_connections {{ $workerConnections }};
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        access_log /dev/stdout;
+
+        client_body_temp_path /tmp/nginx-client-body;
+        proxy_temp_path /tmp/nginx-proxy;
+        fastcgi_temp_path /tmp/nginx-fastcgi;
+        uwsgi_temp_path /tmp/nginx-uwsgi;
+        scgi_temp_path /tmp/nginx-scgi;
+
+        sendfile on;
+        tcp_nopush on;
+        server_tokens off;
+        client_max_body_size {{ $maxBodySizeMegabytes }}m;
+        proxy_read_timeout {{ $proxyReadTimeoutSeconds }}s;
+
+        # TLS-aware forwarded proto, preserving upstream's behaviour behind a
+        # TLS-terminating Ingress. Upstream's own config forwards $scheme, which
+        # is correct when nginx itself terminates TLS and wrong here, where this
+        # sidecar always speaks plain HTTP to the Ingress in front of it: the
+        # application would then build http:// URLs for an https:// site.
+        # Only the two values the application can act on are honoured; anything
+        # else falls back to this hop's own scheme rather than being forwarded
+        # verbatim.
+        map $http_x_forwarded_proto $indi_allsky_forwarded_proto {
+            default $scheme;
+            http    http;
+            https   https;
+        }
+
+        # Connection: upgrade only when the client actually asked for an upgrade.
+        map $http_upgrade $indi_allsky_connection_upgrade {
+            default upgrade;
+            ''      close;
+        }
+
+        upstream indi_allsky_gunicorn {
+            # Loopback, and only loopback. entrypoint-web.sh binds gunicorn to
+            # 127.0.0.1:{{ $gunicornPort }}, so this sidecar is its only possible peer —
+            # that bind, not a NetworkPolicy, is the boundary that makes
+            # gunicorn's FORWARDED_ALLOW_IPS default trustworthy.
+            server 127.0.0.1:{{ $gunicornPort }} fail_timeout=0;
+        }
+
+        server {
+            listen {{ $nginxPort }};
+            server_name _;
+
+            # nginx defaults to `absolute_redirect on`, which rewrites a
+            # relative `return 302 /path` into an ABSOLUTE URL built from the
+            # request's Host header and the port this server is listening on.
+            # Behind a TLS-terminating Ingress that produces
+            # `http://host:{{ $nginxPort }}/...` — wrong scheme, and a port that is not
+            # published — so the front door breaks for every browser that hits
+            # the site root. It is invisible through `kubectl port-forward`,
+            # where host:{{ $nginxPort }} happens to be the address the client really used.
+            #
+            # Turning it off makes every redirect below leave this server as
+            # the literal relative path it was written as, which is correct
+            # whether or not something in front terminates TLS. Upstream
+            # responses are unaffected either way: `proxy_redirect off` passes
+            # gunicorn's own Location headers through untouched, and the
+            # application builds those from Host plus X-Forwarded-Proto.
+            absolute_redirect off;
+
+            # Probe target for this container's own liveness and readiness. It
+            # deliberately does not touch gunicorn: nginx being able to serve
+            # is a different fact from the application being ready, and
+            # conflating them would restart the proxy for an application fault.
+            location = /healthz {
+                access_log off;
+                default_type text/plain;
+                return 200 "ok\n";
+            }
+
+            # Any dot path, at any depth. 404 rather than 403: a 403 confirms
+            # that the path exists, and the whole point is that nothing here
+            # should reveal the .state sibling, an upstream .htaccess, or
+            # anything else dot-prefixed a future upstream version adds. A plain
+            # regex location, so it out-matches the prefix locations below.
+            location ~ /\. {
+                return 404;
+            }
+
+            location {{ $urlPrefix }}/images {
+                # The ONLY data-volume path this container mounts, and it is
+                # mounted read-only. The database dumps and the Alembic tree
+                # live in the .state sibling, which is outside this subtree
+                # entirely and is never mounted here.
+                alias {{ $imagePath }};
+                autoindex off;
+
+                location ~* \.(jpe?g|png|tiff?|bmp|gif|fits?|webp|jp2|mp4|webm)$ {
+                    expires {{ $imageCacheDays }}d;
+                    add_header Pragma public;
+                    add_header Cache-Control "public";
+                }
+            }
+
+            location {{ $urlPrefix }}/static {
+                # Copied out of the web image by the static-copy init container,
+                # so this container never mounts the application image itself.
+                alias {{ $staticPath }};
+                autoindex off;
+
+                location ~* \.(js|css|svg)$ {
+                    expires {{ $staticCacheDays }}d;
+                    add_header Pragma public;
+                    add_header Cache-Control "public";
+                }
+            }
+
+            location {{ $urlPrefix }} {
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $indi_allsky_forwarded_proto;
+                proxy_set_header Host $http_host;
+                proxy_redirect off;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $indi_allsky_connection_upgrade;
+                proxy_pass http://indi_allsky_gunicorn;
+            }
+
+            # Stays the literal relative path because of `absolute_redirect off`
+            # above; without that directive nginx would expand it to this pod's
+            # own scheme, host and port.
+            location = / {
+                return 302 {{ $urlPrefix }};
+            }
+
+            # Nothing else is served. There is no document root: this container
+            # can only reach the images subtree and the copied static assets.
+            location / {
+                return 404;
+            }
+        }
+    }

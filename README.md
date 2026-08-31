@@ -100,9 +100,16 @@ upstream source at the pinned tag plus the `patches/` directory. See
 - `make upstream` — checkout the pinned upstream tag into `upstream/`,
   verify `UPSTREAM_SHA`, apply `patches/`.
 - `docker buildx bake -f images/docker-bake.hcl` — build the bake group
-  `default`: `indiserver`, `daemon` and `web`. Three further targets —
-  `base`, `daemon-upstream` and `web-upstream` — are untagged intermediates
-  consumed through buildx named contexts and never published.
+  `default`: `indiserver`, `daemon` and `web`. Four further targets —
+  `base`, `indiserver-upstream`, `daemon-upstream` and `web-upstream` — are
+  untagged intermediates consumed through buildx named contexts and never
+  published. Seven targets in total; each published image is this repository's
+  own overlay on the matching intermediate.
+- `make image-contract` — assert the build-graph shape and the image sources
+  without building or pulling anything. `images/tests/image-contract.sh` also
+  offers `--runtime-contract` and `--all`, which inspect images that already
+  exist locally and never fetch one, and `--build-runtime-contract`, the only
+  mode that builds the current checkout first.
 - `make lint` — hadolint, shellcheck and actionlint, all strict. Needs
   `docker` (hadolint runs from the same digest-pinned image CI uses, so a
   clean local run means a clean CI run), plus `shellcheck` and `actionlint`
@@ -132,20 +139,25 @@ compute.
   sensors (GPIO / i2c / SPI / 1-wire). Always applied manually: physical
   wiring cannot be autodiscovered.
 
+**Neither label is required by default.** `edge.devices.mode` defaults to
+`none`, which runs the INDI simulator: the edge pod schedules anywhere, mounts
+no host device, and runs no privileged container. A label requirement appears
+only where it is real — the camera label when `edge.devices.mode: hostpath`
+supplies a local camera, and the sensors label when hostPath sensors are
+enabled. `device-plugin` mode uses extended resources instead and needs
+neither.
+
 **v1 constraint:** camera and sensors must be on the **same node**. Upstream
 indi-allsky runs capture, sensing, and processing as one multiprocess
 application coordinating over shared memory, so the chart schedules them as a
-single edge pod — its node selector requires the camera label, plus the
-sensors label when `edge.sensors.enabled` is `true`. The relevant values are
-`nodeContract.cameraLabel`, `nodeContract.sensorsLabel`, and
-`edge.sensors.enabled`.
+single edge pod.
 
 The chart is hardened by default: every container runs under a restricted
-security context except the device-attached edge containers, and no pod
-mounts a service-account token.
+security context, and no pod mounts a service-account token. Exactly one
+container can become privileged, and only when you ask for it —
+`indiserver` with `edge.devices.mode: hostpath` and a local camera. It stays
+uid 10001 even then.
 
 Details: [docs/node-contract.md](docs/node-contract.md), alongside the
-[container contract](docs/container-contract.md). Device access modes
-and host preparation docs are coming with the edge workload; example
-topologies (shared node with capture priority vs a dedicated tainted node)
-are coming with the scheduling docs.
+[container contract](docs/container-contract.md) and
+[chart configuration](docs/configuration.md).

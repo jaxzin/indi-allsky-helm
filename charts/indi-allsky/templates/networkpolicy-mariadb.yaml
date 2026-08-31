@@ -1,0 +1,44 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- /*
+Only for the chart-managed database. With mariadb.enabled=false the database
+is somewhere this chart does not own and cannot select, and rendering a policy
+for a pod that does not exist would be misleading rather than protective.
+*/ -}}
+{{- if and .Values.networkPolicy.enabled .Values.mariadb.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "indi-allsky.mariadbName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mariadb
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "mariadb") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- /*
+        Same namespace (a podSelector with no namespaceSelector never crosses
+        one) and same release, narrowed to the three components that are
+        database clients: the web pod's gunicorn and migrate path, the edge
+        daemon, and the scheduled backup Job. Deliberately not a
+        namespace-wide allow — every other workload sharing the namespace stays
+        out, which is the difference between a policy and a formality.
+        */}}
+        - podSelector:
+            matchLabels:
+              {{- include "indi-allsky.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - web
+                  - edge
+                  - mariadb-backup
+      ports:
+        - port: {{ include "indi-allsky.mariadbPort" . | int }}
+          protocol: TCP
+{{- end }}

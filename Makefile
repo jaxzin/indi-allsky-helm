@@ -1,7 +1,7 @@
 UPSTREAM_REF := $(shell cat UPSTREAM_VERSION)
 UPSTREAM_REPO := https://github.com/aaronwmorris/indi-allsky.git
 
-.PHONY: upstream bake-print lint
+.PHONY: upstream bake-print lint image-contract
 
 upstream:
 	@test -f UPSTREAM_SHA || { echo "UPSTREAM_SHA file missing — see README (Re-pinning)"; exit 1; }
@@ -19,6 +19,12 @@ upstream:
 
 bake-print: upstream
 	docker buildx bake -f images/docker-bake.hcl --print
+
+# Static image and build-graph contract. Needs the pinned upstream checkout
+# because the bake graph references it, but builds and pulls nothing. The
+# runtime modes are documented in the script itself.
+image-contract: upstream
+	images/tests/image-contract.sh --static-contract
 
 # Strict: a lint failure fails the target. The `ls -1` lines print what is
 # about to be linted, so a glob that silently matched nothing is visible in the

@@ -32,8 +32,8 @@ function "cache_to" {
 # the real tags when it assembles the multi-arch manifest lists. Unset (local
 # builds, bake --print lint job), targets keep their normal tags and default
 # outputs. Every published target calls both helpers with its own name; the
-# intermediates (`base`, `daemon-upstream`, `web-upstream`) call neither and
-# are never pushed.
+# intermediates (`base`, `indiserver-upstream`, `daemon-upstream`,
+# `web-upstream`) call neither and are never pushed.
 variable "PUSH_BY_DIGEST" { default = "" } # "true" in CI build jobs
 
 function "publish_tags" {
@@ -64,7 +64,9 @@ target "base" {
   cache-to   = cache_to("base")
 }
 
-target "indiserver" {
+# Upstream INDI server image. Intermediate: cache helpers with its own name,
+# no tags, no publish helpers — same discipline as `base`.
+target "indiserver-upstream" {
   context    = "upstream"
   dockerfile = "docker/Dockerfile.indiserver_debian13"
   contexts   = { "indi.base" = "target:base" }
@@ -72,8 +74,20 @@ target "indiserver" {
     INDI_3RDPARTY_VERSION = INDI_3RDPARTY_VERSION
     INDI_CAMERA_VENDOR    = CAMERA_VENDOR
   }
+  cache-from = cache_from("indiserver-upstream")
+  cache-to   = cache_to("indiserver-upstream")
+}
+
+target "indiserver" {
+  context    = "images"
+  dockerfile = "indiserver/Dockerfile"
+  contexts   = { "indiserver.upstream" = "target:indiserver-upstream" }
   labels = {
-    "org.opencontainers.image.source"   = "https://github.com/jaxzin/indi-allsky-helm"
+    "org.opencontainers.image.source" = "https://github.com/jaxzin/indi-allsky-helm"
+    # Deliberately plain "GPL-3.0-only" where daemon and web say
+    # "GPL-3.0-only AND Apache-2.0": this overlay only removes files, it copies
+    # no Apache-2.0 script from this repo. NOTICE records the same distinction
+    # and the two must stay in agreement.
     "org.opencontainers.image.licenses" = "GPL-3.0-only"
   }
   cache-from = cache_from("indiserver")

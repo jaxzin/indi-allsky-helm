@@ -1,0 +1,40 @@
+{{- include "indi-allsky.validateValues" . -}}
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "indi-allsky.webName" . }}
+  labels:
+    {{- include "indi-allsky.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "indi-allsky.componentLabels" (dict "ctx" . "component" "web") | nindent 6 }}
+  {{- /*
+  Ingress only. No egress rule is rendered anywhere in this chart: the
+  application legitimately reaches an external database, an OIDC provider, an
+  MQTT broker, upload targets and DNS, and standard NetworkPolicy cannot
+  express those portably — a partial egress policy would break them while
+  looking like protection.
+  */}}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- /*
+    Selecting the nginx port and no other is the whole policy. gunicorn's :8000
+    is not admitted here, and — because a policy that selects a pod denies
+    everything it does not allow — nothing in the cluster can reach it through
+    the pod network.
+
+    There is deliberately no `from`. NetworkPolicy selects pods, not
+    containers, so it cannot distinguish the same-pod nginx sidecar from any
+    other peer; the real gunicorn boundary is its 127.0.0.1 bind, not a
+    selector that cannot exist. What this rule does provide is that the only
+    port reachable from outside the pod is the sidecar's, whatever fronts it —
+    an Ingress controller in another namespace, a LoadBalancer, or a port-forward.
+    */}}
+    - ports:
+        - port: {{ include "indi-allsky.nginxPort" . | int }}
+          protocol: TCP
+{{- end }}

@@ -57,3 +57,30 @@ tests:
       - matchRegex:
           path: data["config-overlay.json"]
           pattern: '"INDI_PORT": 17624'
+
+  # The checksum is taken over the compact bytes, so the file the migration path
+  # reads has to BE those bytes. A pretty-printed sibling is for operators only;
+  # hashing it would compare a rendering against a digest of something else.
+  - it: publishes the byte-exact canonical bytes the checksum covers
+    asserts:
+      - equal:
+          path: data["config-overlay.canonical.json"]
+          value: '{"IMAGE_FOLDER":"/var/www/html/allsky/images","INDI_PORT":7624,"INDI_SERVER":"localhost"}'
+      - matchRegex:
+          path: data["config-overlay.canonical.json"]
+          pattern: '^\{"IMAGE_FOLDER"'
+      # Compact: no space after a separator anywhere in the canonical form.
+      - notMatchRegex:
+          path: data["config-overlay.canonical.json"]
+          pattern: ': '
+
+  - it: keeps the canonical and pretty renderings describing the same document
+    set:
+      appConfig.MQTTPUBLISH.HOST: mqtt.example.com
+    asserts:
+      - matchRegex:
+          path: data["config-overlay.canonical.json"]
+          pattern: '"MQTTPUBLISH":\{"HOST":"mqtt\.example\.com"\}'
+      - matchRegex:
+          path: data["config-overlay.json"]
+          pattern: '"HOST": "mqtt.example.com"'

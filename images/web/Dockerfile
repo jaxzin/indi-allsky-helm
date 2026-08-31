@@ -47,15 +47,21 @@ RUN apt-get update \
 # resolved version already satisfies it.
 RUN /home/allsky/venv/bin/pip install --no-cache-dir 'Flask-Migrate>=4.0.6'
 
-# validators.sh is sourced, never executed, so it is not marked executable.
-COPY --chown=10001:10001 --chmod=644 shared/validators.sh /home/allsky/
+# Sourced, never executed, so these three are not marked executable.
+COPY --chown=10001:10001 --chmod=644 \
+    shared/validators.sh web/db-connection.sh web/dump-publish.sh \
+    /home/allsky/
 COPY --chown=10001:10001 --chmod=755 \
-    shared/render-flask-config.sh web/entrypoint-web.sh web/migrate.sh \
+    shared/render-flask-config.sh web/entrypoint-web.sh \
+    web/db-maintenance-lock.sh web/migrate.sh web/migrate-critical.sh \
+    web/scheduled-backup.sh \
     /home/allsky/
 
 # Numeric USER: kubelet cannot verify runAsNonRoot against a named user
 # ("container has runAsNonRoot and image has non-numeric user").
 USER 10001:10001
 WORKDIR /home/allsky
+# Documentation only. entrypoint-web.sh binds gunicorn to 127.0.0.1:8000, so
+# this port is reachable from the same pod and from nowhere else.
 EXPOSE 8000
 ENTRYPOINT ["/home/allsky/entrypoint-web.sh"]

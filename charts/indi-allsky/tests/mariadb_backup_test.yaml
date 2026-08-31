@@ -48,42 +48,36 @@ tests:
     set:
       mariadb.backup.enabled: true
     asserts:
-      - lengthEqual: {path: "spec.jobTemplate.spec.template.spec.containers[0].env", count: 10}
+      - lengthEqual: {path: "spec.jobTemplate.spec.template.spec.containers[0].env", count: 8}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: DB_HOST, value: test-release-indi-allsky-mariadb}
+          content: {name: INDIALLSKY_MARIADB_HOST, value: test-release-indi-allsky-mariadb}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: DB_PORT, value: "3306"}
+          content: {name: INDIALLSKY_MARIADB_PORT, value: "3306"}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: DB_USER, value: indi_allsky}
+          content: {name: INDIALLSKY_MARIADB_SSL, value: "false"}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: DB_DATABASE, value: indi_allsky}
+          content: {name: MARIADB_USER, value: indi_allsky}
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content: {name: MARIADB_DATABASE, value: indi_allsky}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
           content:
-            name: MYSQL_PWD
+            name: MARIADB_PASSWORD
             valueFrom:
               secretKeyRef:
                 name: test-release-indi-allsky-env
                 key: MARIADB_PASSWORD
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: BACKUP_DIR, value: /var/www/html/.state/backups}
+          content: {name: INDIALLSKY_BACKUP_DIR, value: /var/www/html/.state/backups}
       - contains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: SCHEDULED_BACKUP_PREFIX, value: indi-allsky_scheduled}
-      - contains:
-          path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: RETENTION_DAYS, value: "14"}
-      - contains:
-          path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: BACKUP_DIR_MODE, value: "0700"}
-      - contains:
-          path: spec.jobTemplate.spec.template.spec.containers[0].env
-          content: {name: BACKUP_FILE_MODE, value: "0600"}
+          content: {name: INDIALLSKY_BACKUP_RETENTION_DAYS, value: "14"}
       - notContains:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
           content: {name: MARIADB_ROOT_PASSWORD}
@@ -92,39 +86,47 @@ tests:
           path: spec.jobTemplate.spec.template.spec.containers[0].env
           content: {name: MARIADB_ROOT_PASSWORD_FILE}
           any: true
+      # No blanket envFrom anywhere: an opaque Secret must not be able to
+      # override the chart-owned endpoint this Job locks and dumps.
       - notExists: {path: "spec.jobTemplate.spec.template.spec.containers[0].envFrom"}
       - lengthEqual: {path: spec.jobTemplate.spec.template.spec.volumes, count: 1}
       - equal: {path: "spec.jobTemplate.spec.template.spec.volumes[0].persistentVolumeClaim.claimName", value: test-release-indi-allsky-data}
-      - equal: {path: "spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[0].mountPath", value: /var/www/html}
 
-  - it: renders every verified atomic backup safety property in execution order
+  # The dump runs through the shipped, linted, behaviour-tested scripts rather
+  # than an inline copy of them, and inside the shared advisory lock.
+  - it: runs the shipped backup script under the shared advisory lock
     set:
       mariadb.backup.enabled: true
     asserts:
       - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].image
+          value: ghcr.io/jaxzin/indi-allsky-web:indi_v2026.08.01
+      - equal:
           path: spec.jobTemplate.spec.template.spec.containers[0].command
-          value: [/bin/bash, -c]
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'set -Eeuo pipefail'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'umask 077'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'trap cleanup EXIT INT TERM HUP'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'chmod "\$BACKUP_DIR_MODE" "\$BACKUP_DIR"'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'mktemp .*XXXXXX\.tmp'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'final_file=.*\$\{unique_suffix\}\.sql\.gz'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: '(?s)mariadb-dump.*--single-transaction.*--quick.*--no-tablespaces.*-- "\$DB_DATABASE"'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'gzip -t "\$temporary_file"'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'if \[ ! -s "\$temporary_file" \]'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'chmod "\$BACKUP_FILE_MODE" "\$temporary_file"'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: '(?s)mv -- "\$temporary_file" "\$final_file".*Verified scheduled database backup: %s \(%s bytes\).*find "\$BACKUP_DIR"'}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: '-name "\$\{SCHEDULED_BACKUP_PREFIX\}_\*\.sql\.gz"'}
-      - notMatchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: 'pre-migrate_'}
+          value: [/home/allsky/db-maintenance-lock.sh]
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.containers[0].args
+          value: ["--", /home/allsky/scheduled-backup.sh]
+      - lengthEqual: {path: "spec.jobTemplate.spec.template.spec.containers[0].args", count: 2}
 
-  - it: keeps a leading-hyphen database as one positional argument behind the delimiter
+  # Minimum visibility: the Job publishes dumps into the .state sibling and has
+  # no reason to see the image tree or the web docroot.
+  - it: mounts only the state sibling of the shared claim
+    set:
+      mariadb.backup.enabled: true
+    asserts:
+      - lengthEqual: {path: "spec.jobTemplate.spec.template.spec.containers[0].volumeMounts", count: 1}
+      - equal: {path: "spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[0].mountPath", value: /var/www/html/.state}
+      - equal: {path: "spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[0].subPath", value: .state}
+
+  - it: keeps a leading-hyphen database name out of the client option list
     set:
       mariadb.backup.enabled: true
       mariadb.database: --all-databases
     asserts:
-      - equal: {path: "spec.jobTemplate.spec.template.spec.containers[0].env[3].value", value: --all-databases}
-      - matchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: '-- "\$DB_DATABASE"'}
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content: {name: MARIADB_DATABASE, value: --all-databases}
 
   - it: resolves an existing application Secret and never references the root Secret
     set:
@@ -136,8 +138,18 @@ tests:
       mariadb.rootCredentials.existingSecret: existing-root-secret
       mariadb.rootCredentials.password: ""
     asserts:
-      - equal: {path: "spec.jobTemplate.spec.template.spec.containers[0].env[4].valueFrom.secretKeyRef.name", value: existing-app-secret}
-      - notMatchRegex: {path: "spec.jobTemplate.spec.template.spec.containers[0].args[0]", pattern: MARIADB_ROOT_PASSWORD}
+      - contains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content:
+            name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: existing-app-secret
+                key: MARIADB_PASSWORD
+      - notContains:
+          path: spec.jobTemplate.spec.template.spec.containers[0].env
+          content: {name: MARIADB_ROOT_PASSWORD}
+          any: true
 
   - it: renders chart-wide image pull secrets in parity with MariaDB
     set:

@@ -1,11 +1,84 @@
-suite: priority class
-templates: [priorityclass.yaml]
+suite: edge PriorityClass ownership
+values:
+  - a5-values.yaml
+release:
+  name: test-release
 tests:
-  - it: renders with the configured value
+  - it: creates one class with the default spec
+    template: priorityclass.yaml
     asserts:
-      - equal: { path: value, value: 1000000 }
-      - equal: { path: kind, value: PriorityClass }
-  - it: can be disabled
-    set: { edge.priorityClass.create: false }
+      - hasDocuments: {count: 1}
+      - equal: {path: kind, value: PriorityClass}
+      - equal: {path: value, value: 1000000}
+      - equal: {path: preemptionPolicy, value: PreemptLowerPriority}
+      - equal: {path: globalDefault, value: false}
+
+  - it: sets the created class on the edge pod
+    template: edge-deployment.yaml
     asserts:
-      - hasDocuments: { count: 0 }
+      - matchRegex:
+          path: spec.template.spec.priorityClassName
+          pattern: '^test-release-indi-allsky-capture-[0-9a-f]{10}$'
+
+  # A cluster-scoped object named from release identity alone collides across
+  # namespaces. The generated name therefore also varies with the spec this
+  # release intends, so changing the value or the preemption policy cannot
+  # silently adopt another release's scheduling contract.
+  - it: gives a different spec a different generated name
+    template: priorityclass.yaml
+    set:
+      edge.priorityClass.value: 900000
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: '^test-release-indi-allsky-capture-[0-9a-f]{10}$'
+      - notMatchRegex:
+          path: metadata.name
+          # The digest the default value renders in this namespace.
+          pattern: '-cc11b39167$'
+
+  - it: honours a non-preempting policy
+    template: priorityclass.yaml
+    set:
+      edge.priorityClass.preemptionPolicy: Never
+    asserts:
+      - equal: {path: preemptionPolicy, value: Never}
+
+  - it: renders no object in reference mode
+    template: priorityclass.yaml
+    set:
+      edge.priorityClass.mode: reference
+      edge.priorityClass.name: platform-owned-capture
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: uses the externally owned class name on the edge pod in reference mode
+    template: edge-deployment.yaml
+    set:
+      edge.priorityClass.mode: reference
+      edge.priorityClass.name: platform-owned-capture
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: platform-owned-capture
+
+  - it: renders no object in disabled mode
+    template: priorityclass.yaml
+    set:
+      edge.priorityClass.mode: disabled
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: sets no priorityClassName at all in disabled mode
+    template: edge-deployment.yaml
+    set:
+      edge.priorityClass.mode: disabled
+    asserts:
+      - notExists: {path: spec.template.spec.priorityClassName}
+
+  - it: accepts the ceiling itself
+    template: priorityclass.yaml
+    set:
+      edge.priorityClass.value: 1000000000
+    asserts:
+      - equal: {path: value, value: 1000000000}

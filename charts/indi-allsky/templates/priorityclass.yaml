@@ -1,11 +1,28 @@
-{{- if .Values.edge.priorityClass.create }}
+{{- include "indi-allsky.validateValues" . -}}
+{{- /*
+Ownership is a tri-state, not a boolean, because a PriorityClass is
+CLUSTER-scoped while a Helm release is not. `create` means this release owns
+the object; `reference` means an external owner (IaC/CI, or one designated
+release) created it and every other release points at it by name; `disabled`
+means the edge pod carries no priorityClassName at all.
+
+The old boolean conflated "do not create" with "do not use": a second release
+in another namespace either fought over the same cluster-scoped name or
+silently lost its scheduling priority, with no way to say "use the shared one".
+_validate.tpl rejects every incoherent mode/name combination; the generated
+name comes from _helpers.tpl and carries namespace, release identity, and the
+spec this release intends, so two releases share a name only when they would
+have rendered an identical class.
+*/ -}}
+{{- if eq .Values.edge.priorityClass.mode "create" }}
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ include "indi-allsky.resourceName" (dict "ctx" . "suffix" "capture" "maxLength" 63) }}
+  name: {{ include "indi-allsky.priorityClassName" . }}
   labels: {{- include "indi-allsky.labels" . | nindent 4 }}
 {{- /* `| int` guards against Go templates rendering large numbers as 1e+06 */}}
 value: {{ .Values.edge.priorityClass.value | int }}
+preemptionPolicy: {{ .Values.edge.priorityClass.preemptionPolicy }}
 globalDefault: false
 description: "indi-allsky capture — outranks ordinary workloads on the camera node"
 {{- end }}

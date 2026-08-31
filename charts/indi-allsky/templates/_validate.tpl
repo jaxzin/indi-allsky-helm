@@ -41,11 +41,16 @@
 {{- if not (has $kind (list "int" "int32" "int64" "float64")) -}}
   {{- fail (printf "%s must be a whole number >= %d" .name (int .minimum)) -}}
 {{- end -}}
-{{- $rendered := toString .value -}}
-{{- if not (regexMatch "^[0-9]+$" $rendered) -}}
+{{/* Wholeness is tested numerically, not against a rendering. Helm parses every
+     YAML number as float64 and Go prints large ones in exponent form —
+     1000000 becomes "1e+06" and 1000000001 becomes "1.000000001e+09" — so a
+     regex over the printed form either rejects legitimate whole numbers or has
+     to accept a decimal point and stop catching real fractions. Truncating and
+     comparing back has neither problem. */}}
+{{- if ne (float64 (int64 .value)) (float64 .value) -}}
   {{- fail (printf "%s must be a whole number >= %d" .name (int .minimum)) -}}
 {{- end -}}
-{{- if lt (int $rendered) (int .minimum) -}}
+{{- if lt (int64 .value) (int64 .minimum) -}}
   {{- fail (printf "%s must be >= %d" .name (int .minimum)) -}}
 {{- end -}}
 {{- end }}
@@ -64,6 +69,38 @@
 
 {{- define "indi-allsky.validateSecretName" -}}
 {{- include "indi-allsky.validateDnsSubdomain" (dict "name" .name "value" .value "objectKind" "Secret name") -}}
+{{- end }}
+
+{{- define "indi-allsky.validateIntegerList" -}}
+{{- if not (kindIs "slice" .value) -}}
+  {{- fail (printf "%s must be a list of whole numbers" .name) -}}
+{{- end -}}
+{{- range $index, $entry := .value -}}
+  {{- include "indi-allsky.validateIntegerAtLeast" (dict "name" (printf "%s[%d]" $.name $index) "value" $entry "minimum" $.minimum) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Structured host device entries. Bare strings are rejected on purpose: the chart
+renders the readOnly and hostPath type an operator states and never infers
+device access from the shape of a path.
+*/}}
+{{- define "indi-allsky.validateHostPathList" -}}
+{{- if not (kindIs "slice" .value) -}}
+  {{- fail (printf "%s must be a list of {path, type, readOnly} objects" .name) -}}
+{{- end -}}
+{{- range $index, $entry := .value -}}
+  {{- $label := printf "%s[%d]" $.name $index -}}
+  {{- if not (kindIs "map" $entry) -}}
+    {{- fail (printf "%s must be an object with exactly the fields path, type and readOnly" $label) -}}
+  {{- end -}}
+  {{- if or (ne (len $entry) 3) (not (hasKey $entry "path")) (not (hasKey $entry "type")) (not (hasKey $entry "readOnly")) -}}
+    {{- fail (printf "%s must contain exactly the fields path, type and readOnly" $label) -}}
+  {{- end -}}
+  {{- include "indi-allsky.validatePattern" (dict "name" (printf "%s.path" $label) "value" (get $entry "path") "pattern" "^/[^[:space:]]*$" "allowEmpty" false "description" "must be an absolute path with no whitespace") -}}
+  {{- include "indi-allsky.validateEnum" (dict "name" (printf "%s.type" $label) "value" (get $entry "type") "allowed" (list "Directory" "CharDevice")) -}}
+  {{- include "indi-allsky.validateBool" (dict "name" (printf "%s.readOnly" $label) "value" (get $entry "readOnly")) -}}
+{{- end -}}
 {{- end }}
 
 {{- define "indi-allsky.validateStringList" -}}
@@ -212,6 +249,90 @@
 {{- end -}}
 
 {{- if and .Values.mariadb.backup.enabled (eq (trim .Values.mariadb.backup.schedule) "") }}{{ fail "mariadb.backup.schedule must be non-empty when scheduled backups are enabled" }}{{ end -}}
+
+{{/* --- network policy, web service and ingress ---------------------------- */}}
+{{- include "indi-allsky.validateBool" (dict "name" "networkPolicy.enabled" "value" .Values.networkPolicy.enabled) -}}
+{{- include "indi-allsky.validateIntegerAtLeast" (dict "name" "web.service.port" "value" .Values.web.service.port "minimum" 1) -}}
+{{- if gt (int .Values.web.service.port) 65535 }}{{ fail "web.service.port must be <= 65535" }}{{ end -}}
+{{- include "indi-allsky.validateBool" (dict "name" "web.ingress.enabled" "value" .Values.web.ingress.enabled) -}}
+{{- include "indi-allsky.validateString" (dict "name" "web.ingress.className" "value" .Values.web.ingress.className "allowEmpty" true) -}}
+{{- if not (kindIs "map" .Values.web.ingress.annotations) }}{{ fail "web.ingress.annotations must be a map/object" }}{{ end -}}
+{{- if not (kindIs "slice" .Values.web.ingress.tls) }}{{ fail "web.ingress.tls must be a list of Ingress TLS objects" }}{{ end -}}
+{{- if .Values.web.ingress.enabled -}}
+  {{- include "indi-allsky.validatePattern" (dict "name" "web.ingress.host" "value" .Values.web.ingress.host "pattern" "^(\\*\\.)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" "allowEmpty" false "description" "must be a lowercase DNS hostname, optionally wildcarded as *.example.com") -}}
+{{- end -}}
+
+{{/* --- edge PriorityClass ownership --------------------------------------- */}}
+{{- $priorityClass := .Values.edge.priorityClass -}}
+{{- include "indi-allsky.validateEnum" (dict "name" "edge.priorityClass.mode" "value" $priorityClass.mode "allowed" (list "create" "reference" "disabled")) -}}
+{{- include "indi-allsky.validateEnum" (dict "name" "edge.priorityClass.preemptionPolicy" "value" $priorityClass.preemptionPolicy "allowed" (list "PreemptLowerPriority" "Never")) -}}
+{{- include "indi-allsky.validateIntegerAtLeast" (dict "name" "edge.priorityClass.value" "value" $priorityClass.value "minimum" 1) -}}
+{{/* Kubernetes' HighestUserDefinablePriority; above it the API server reserves
+     the range for system-critical classes and rejects the object. */}}
+{{- if gt (int $priorityClass.value) 1000000000 }}{{ fail "edge.priorityClass.value must be <= 1000000000 (Kubernetes reserves higher values for system-critical classes)" }}{{ end -}}
+{{- include "indi-allsky.validateDnsSubdomain" (dict "name" "edge.priorityClass.name" "value" $priorityClass.name "objectKind" "PriorityClass name") -}}
+{{- if eq $priorityClass.mode "reference" -}}
+  {{- if not $priorityClass.name }}{{ fail "edge.priorityClass.name is required when edge.priorityClass.mode=reference — that mode uses a class owned by external IaC/CI and renders none itself" }}{{ end -}}
+{{- else -}}
+  {{- if $priorityClass.name }}{{ fail (printf "edge.priorityClass.name must be empty when edge.priorityClass.mode=%s — only reference mode names an externally owned class" $priorityClass.mode) }}{{ end -}}
+{{- end -}}
+
+{{/* --- edge devices, sensors and scheduling -------------------------------- */}}
+{{- include "indi-allsky.validateBool" (dict "name" "edge.sensors.enabled" "value" .Values.edge.sensors.enabled) -}}
+{{- include "indi-allsky.validateIntegerList" (dict "name" "edge.supplementalGroups" "value" .Values.edge.supplementalGroups "minimum" 0) -}}
+{{- $devices := .Values.edge.devices -}}
+{{- include "indi-allsky.validateHostPathList" (dict "name" "edge.devices.camera.hostPaths" "value" $devices.camera.hostPaths) -}}
+{{- include "indi-allsky.validateHostPathList" (dict "name" "edge.devices.sensors.hostPaths" "value" $devices.sensors.hostPaths) -}}
+{{- if not (kindIs "map" $devices.camera.resources) }}{{ fail "edge.devices.camera.resources must be a map/object of extended resource names to quantities" }}{{ end -}}
+{{- if not (kindIs "map" $devices.sensors.resources) }}{{ fail "edge.devices.sensors.resources must be a map/object of extended resource names to quantities" }}{{ end -}}
+
+{{- $sidecarIndiserver := eq .Values.indiserver.mode "sidecar" -}}
+{{- if not $sidecarIndiserver -}}
+  {{- if $devices.camera.hostPaths }}{{ fail "edge.devices.camera.hostPaths must be empty when indiserver.mode=external — the camera is attached to the external INDI server, not to this pod" }}{{ end -}}
+  {{- if $devices.camera.resources }}{{ fail "edge.devices.camera.resources must be empty when indiserver.mode=external — the camera is attached to the external INDI server, not to this pod" }}{{ end -}}
+{{- end -}}
+
+{{- if eq $devices.mode "none" -}}
+  {{- if or $devices.camera.hostPaths $devices.camera.resources }}{{ fail "edge.devices.camera.* must be empty when edge.devices.mode=none — set mode to hostpath or device-plugin to attach a camera" }}{{ end -}}
+  {{- if or $devices.sensors.hostPaths $devices.sensors.resources }}{{ fail "edge.devices.sensors.* must be empty when edge.devices.mode=none — set mode to hostpath or device-plugin to attach sensors" }}{{ end -}}
+  {{- if .Values.edge.sensors.enabled }}{{ fail "edge.sensors.enabled=true requires edge.devices.mode=hostpath or device-plugin — mode=none provides no sensor access mechanism" }}{{ end -}}
+{{- else if eq $devices.mode "hostpath" -}}
+  {{- if or $devices.camera.resources $devices.sensors.resources }}{{ fail "edge.devices.*.resources must be empty when edge.devices.mode=hostpath — extended resources are only scheduled in device-plugin mode" }}{{ end -}}
+  {{- if and $sidecarIndiserver (not $devices.camera.hostPaths) (not $devices.sensors.hostPaths) }}{{ fail "edge.devices.mode=hostpath requires at least one entry in edge.devices.camera.hostPaths or edge.devices.sensors.hostPaths" }}{{ end -}}
+  {{- if and .Values.edge.sensors.enabled (not $devices.sensors.hostPaths) }}{{ fail "edge.sensors.enabled=true with edge.devices.mode=hostpath requires edge.devices.sensors.hostPaths" }}{{ end -}}
+{{- else -}}
+  {{- if or $devices.camera.hostPaths $devices.sensors.hostPaths }}{{ fail "edge.devices.*.hostPaths must be empty when edge.devices.mode=device-plugin — host paths are only mounted in hostpath mode" }}{{ end -}}
+  {{- if and $sidecarIndiserver (not $devices.camera.resources) }}{{ fail "edge.devices.mode=device-plugin requires edge.devices.camera.resources, e.g. {squat.ai/asi-camera: 1}" }}{{ end -}}
+  {{- if and .Values.edge.sensors.enabled (not $devices.sensors.resources) }}{{ fail "edge.sensors.enabled=true with edge.devices.mode=device-plugin requires edge.devices.sensors.resources" }}{{ end -}}
+{{- end -}}
+
+{{- if and .Values.edge.supplementalGroups (ne $devices.mode "hostpath") -}}
+  {{- fail "edge.supplementalGroups must be empty unless edge.devices.mode=hostpath — group ids only grant access to host device nodes" -}}
+{{- end -}}
+{{- if and $devices.sensors.hostPaths (not .Values.edge.sensors.enabled) -}}
+  {{- fail "edge.devices.sensors.hostPaths requires edge.sensors.enabled=true — otherwise the mounts would be rendered and never used" -}}
+{{- end -}}
+{{- if and $devices.sensors.resources (not .Values.edge.sensors.enabled) -}}
+  {{- fail "edge.devices.sensors.resources requires edge.sensors.enabled=true — otherwise the resource request would be scheduled and never used" -}}
+{{- end -}}
+
+{{/* --- capture scratch directory ------------------------------------------ */}}
+{{/* A dedicated emptyDir at a path that overlaps the rendered config, the
+     projected overlay, or the shared data volume would shadow that mount and
+     silently discard whatever the pod expected to find there. */}}
+{{- if .Values.edge.captureTmpDir -}}
+  {{- $protected := list
+        (include "indi-allsky.configPath" .)
+        (include "indi-allsky.overlayMountPath" .)
+        (include "indi-allsky.dataMountPath" .) -}}
+  {{- $captureTmpDir := .Values.edge.captureTmpDir | trimSuffix "/" -}}
+  {{- if eq $captureTmpDir "" }}{{ fail "edge.captureTmpDir must not be the filesystem root" }}{{ end -}}
+  {{- range $path := $protected -}}
+    {{- if or (eq $captureTmpDir $path) (hasPrefix (printf "%s/" $path) $captureTmpDir) (hasPrefix (printf "%s/" $captureTmpDir) $path) -}}
+      {{- fail (printf "edge.captureTmpDir must not overlap %s" $path) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 
 {{- $sensitivePaths := list
   (list "FILETRANSFER" "PASSWORD")

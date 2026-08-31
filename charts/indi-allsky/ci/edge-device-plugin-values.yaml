@@ -1,0 +1,27 @@
+# CI-only fixture for the preferred hardware path: a device plugin advertises
+# extended resources and the scheduler places the edge pod, so there is no node
+# label, no host device volume and no privileged container. Also covers the
+# disabled PriorityClass mode and a dedicated capture scratch volume. All
+# credentials are throwaway render fixtures; this directory is excluded from
+# packaged charts by .helmignore.
+credentials:
+  flaskSecretKey: ci-dummy
+  flaskPasswordKey: ci-dummy
+  mariadbPassword: ci-dummy
+mariadb:
+  rootCredentials:
+    password: ci-root-dummy
+edge:
+  priorityClass:
+    mode: disabled
+  captureTmpDir: /var/tmp/indi-allsky-capture
+  sensors:
+    enabled: true
+  devices:
+    mode: device-plugin
+    camera:
+      resources:
+        squat.ai/asi-camera: 1
+    sensors:
+      resources:
+        squat.ai/i2c: 1

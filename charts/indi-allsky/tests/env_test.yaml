@@ -79,7 +79,7 @@ tests:
           value: "true"
       - equal:
           path: data.INDIALLSKY_CONFIG_OVERLAY
-          value: /etc/indi-allsky-overlay/config-overlay.json
+          value: /etc/indi-allsky-overlay/config-overlay.canonical.json
       - equal:
           path: data.INDIALLSKY_CONFIG_OVERLAY_SHA256
           value: e63d5813f1179ddbf35c79dcfe7ea16cc8193b07e775a57ae5f4726bf33ca8bf
@@ -117,7 +117,7 @@ tests:
       adminUser.name: Chart Admin
       adminUser.email: admin@example.com
       credentials.adminPassword: test-admin-password
-      edge.captureTmpDir: /var/www/html/.state/capture-tmp
+      edge.captureTmpDir: /var/tmp/indi-allsky-capture
       edge.darks.enabled: true
       edge.darks.daytime: false
       edge.darks.bitmax: 12
@@ -149,7 +149,7 @@ tests:
           value: admin@example.com
       - equal:
           path: data.CAPTURE_TMPDIR
-          value: /var/www/html/.state/capture-tmp
+          value: /var/tmp/indi-allsky-capture
       - equal:
           path: data.INDIALLSKY_DARK_CAPTURE_ENABLE
           value: "true"
