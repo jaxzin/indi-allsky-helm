@@ -79,6 +79,23 @@ data:
             listen {{ $nginxPort }};
             server_name _;
 
+            # nginx defaults to `absolute_redirect on`, which rewrites a
+            # relative `return 302 /path` into an ABSOLUTE URL built from the
+            # request's Host header and the port this server is listening on.
+            # Behind a TLS-terminating Ingress that produces
+            # `http://host:{{ $nginxPort }}/...` — wrong scheme, and a port that is not
+            # published — so the front door breaks for every browser that hits
+            # the site root. It is invisible through `kubectl port-forward`,
+            # where host:{{ $nginxPort }} happens to be the address the client really used.
+            #
+            # Turning it off makes every redirect below leave this server as
+            # the literal relative path it was written as, which is correct
+            # whether or not something in front terminates TLS. Upstream
+            # responses are unaffected either way: `proxy_redirect off` passes
+            # gunicorn's own Location headers through untouched, and the
+            # application builds those from Host plus X-Forwarded-Proto.
+            absolute_redirect off;
+
             # Probe target for this container's own liveness and readiness. It
             # deliberately does not touch gunicorn: nginx being able to serve
             # is a different fact from the application being ready, and
@@ -137,8 +154,9 @@ data:
                 proxy_pass http://indi_allsky_gunicorn;
             }
 
-            # Relative redirect, so it stays correct whether the Ingress in
-            # front terminates TLS or not.
+            # Stays the literal relative path because of `absolute_redirect off`
+            # above; without that directive nginx would expand it to this pod's
+            # own scheme, host and port.
             location = / {
                 return 302 {{ $urlPrefix }};
             }

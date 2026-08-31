@@ -200,4 +200,10 @@ expect_mutation_detected \
     templates/configmap-overlay.yaml \
     's|^  config-overlay.canonical.json: {{ \$canonical \| toJson }}$|  config-overlay.canonical.json: {{ $canonical \| fromJson \| toPrettyJson \| toJson }}|'
 
+expect_mutation_detected \
+    "nginx allowed to rewrite redirects to its own scheme, host and port" \
+    "keeps every redirect relative to the front door, not to this pod" \
+    templates/configmap-nginx.yaml \
+    's|^            absolute_redirect off;$|            # absolute_redirect left at its default|'
+
 printf 'mutation controls: %d contract mutations detected\n' "$case_number"

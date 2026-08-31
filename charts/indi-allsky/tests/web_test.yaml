@@ -416,6 +416,33 @@ tests:
           path: data["nginx.conf"]
           pattern: 'proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;'
 
+  # nginx defaults to `absolute_redirect on`, which rewrites every relative
+  # redirect — the site-root 302 AND the implicit trailing-slash 301 on image
+  # subdirectories — into an absolute URL built from the request Host and this
+  # server's listen port. Behind a TLS-terminating Ingress that sends browsers
+  # to http://host:8080/..., a wrong scheme on an unpublished port. It looks
+  # correct through `kubectl port-forward`, where host:8080 is genuinely the
+  # client's address, so only a non-loopback Host header exposes it.
+  - it: keeps every redirect relative to the front door, not to this pod
+    template: configmap-nginx.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '(?s)server \{.*?absolute_redirect off;'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'return 302 /indi-allsky;'
+      # The redirect target must stay a path: an absolute URL written here
+      # would defeat the directive above.
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: 'return 30[12] https?://'
+      # `proxy_redirect off` keeps gunicorn's own Location headers untouched;
+      # the application builds those from Host plus X-Forwarded-Proto.
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: 'proxy_redirect off;'
+
   - it: exposes a health endpoint that does not depend on the application
     template: configmap-nginx.yaml
     asserts:

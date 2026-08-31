@@ -364,6 +364,20 @@ and readiness endpoint and deliberately does not touch gunicorn.
 and otherwise falls back to this hop's own scheme, so the application builds
 `https://` URLs behind a TLS-terminating Ingress and correct URLs without one.
 
+The sidecar also sets `absolute_redirect off`. nginx defaults that directive
+**on**, which rewrites every redirect it generates — the site-root 302 and the
+implicit trailing-slash 301 on image subdirectories — into an absolute URL
+built from the request's Host header and the port nginx is listening on. Behind
+a TLS-terminating Ingress that sends browsers to `http://host:8080/...`: wrong
+scheme, unpublished port. Turning it off keeps those redirects relative, so
+they resolve against whatever the client actually connected to. Upstream
+responses are unaffected — `proxy_redirect off` passes gunicorn's own Location
+headers through untouched.
+
+This is worth knowing when reproducing a redirect problem: through
+`kubectl port-forward` the client really is talking to `host:8080`, so an
+absolute redirect looks correct there and only misbehaves through the Ingress.
+
 `web.ingress` is off by default and renders a single host with the configured
 class name, annotations and optional TLS when enabled.
 
