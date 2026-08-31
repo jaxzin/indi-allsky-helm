@@ -491,11 +491,15 @@ else. CI proves that over the whole rendered release, not just per workload.
 
 ## Render-time validation and naming
 
-Every A5 manifest invokes one centralized validation helper, and CI verifies
-that wiring before running the unit suite. Invalid or mixed secret modes,
-authentication dead ends, malformed database fields, invalid lists/enums,
-unsafe ConfigMap credentials, and non-integer retention fail the Helm render
-with an actionable message.
+Every manifest invokes one centralized validation helper, and CI verifies that
+wiring before running the unit suite — including that the wiring list and
+`templates/` have not diverged, so a new template cannot skip validation by
+being unknown to the check. Invalid or mixed secret modes, authentication dead
+ends, malformed database fields, invalid lists/enums, unsafe ConfigMap
+credentials, non-integer retention, incoherent PriorityClass ownership,
+malformed host device entries, a device mode that would silently ignore the
+settings given to it, and a capture scratch path that would shadow a mount all
+fail the Helm render with an actionable message.
 
 Generated names preserve semantic suffixes and stay within Kubernetes limits.
 Normalization or truncation adds an eight-character hash derived from the
