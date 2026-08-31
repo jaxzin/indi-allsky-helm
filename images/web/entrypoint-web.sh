@@ -13,7 +13,16 @@ ALLSKY_DIRECTORY="/home/allsky/indi-allsky"
 # gunicorn settings. Values are upstream parity with
 # docker/start_gunicorn.sh:159-166 — named here so the invocation carries no
 # bare numbers.
-GUNICORN_BIND="0.0.0.0:8000"
+#
+# The bind is the one deliberate divergence from upstream. Loopback, not
+# 0.0.0.0: the nginx sidecar in the same pod is gunicorn's only legitimate
+# peer, and gunicorn's own FORWARDED_ALLOW_IPS default (127.0.0.1,::1) is only
+# load-bearing if nothing else can reach this port at all. Standard
+# NetworkPolicy cannot express "same pod only" — it selects pods, not
+# containers — so this bind IS that boundary. Anything else in the cluster that
+# could reach :8000 directly could also set X-Forwarded-For and be treated as
+# an admin.
+GUNICORN_BIND="127.0.0.1:8000"
 GUNICORN_WORKER_CLASS="gthread"
 GUNICORN_THREADS="8"
 GUNICORN_TIMEOUT="180"
