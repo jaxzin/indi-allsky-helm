@@ -139,7 +139,7 @@ jobs:
           WEB_DIGEST: ${{ steps.digests.outputs.web }}
         run: |
           set -euo pipefail
-          cat > release-notes.md <<'TEMPLATE'
+          cat > release-notes.tmpl <<'TEMPLATE'
           ## Install
 
           ```sh
@@ -203,7 +203,10 @@ jobs:
           ---
           TEMPLATE
 
-          sed -i \
+          # Redirect rather than `sed -i`: BSD sed spells that flag differently,
+          # and this step should be runnable by hand on any machine before
+          # anyone reaches for a throwaway tag to test it in CI.
+          sed \
             -e "s|@VERSION@|${VERSION}|g" \
             -e "s|@TAG@|${GITHUB_REF_NAME}|g" \
             -e "s|@COMMIT@|${GITHUB_SHA}|g" \
@@ -211,7 +214,7 @@ jobs:
             -e "s|@INDISERVER_DIGEST@|${INDISERVER_DIGEST}|g" \
             -e "s|@DAEMON_DIGEST@|${DAEMON_DIGEST}|g" \
             -e "s|@WEB_DIGEST@|${WEB_DIGEST}|g" \
-            release-notes.md
+            release-notes.tmpl > release-notes.md
 
           if grep -n '@[A-Z_]*@' release-notes.md; then
             echo "::error::release notes still contain an unsubstituted placeholder"
