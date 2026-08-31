@@ -31,7 +31,7 @@ kubectl -n allsky create secret generic indi-allsky-mariadb-root \
   --from-literal=MARIADB_ROOT_PASSWORD="$(openssl rand -hex 16)"
 
 helm install allsky oci://ghcr.io/jaxzin/charts/indi-allsky \
-  --version 0.1.0 --namespace allsky \
+  --version 0.1.0-rc.1 --namespace allsky \
   --set credentials.existingSecret=indi-allsky-env \
   --set mariadb.rootCredentials.existingSecret=indi-allsky-mariadb-root \
   --set adminUser.username=admin \
@@ -41,9 +41,9 @@ kubectl -n allsky port-forward svc/allsky-indi-allsky-web 8080:8080
 # then http://localhost:8080/indi-allsky
 ```
 
-> The first chart version is not published yet — see
-> [project status](#project-status) below. Until it is, install from a git
-> checkout: `helm install allsky ./charts/indi-allsky …`.
+> Tested end-to-end in CI against a real cluster with a simulated camera —
+> see [Project status](#project-status) for exactly what that does and does
+> not cover before pointing this at real hardware.
 
 For a real camera, copy
 [`examples/values-zwo-pi.yaml`](examples/values-zwo-pi.yaml) and read
@@ -237,7 +237,7 @@ Details: [docs/node-contract.md](docs/node-contract.md).
 
 ## Project status
 
-**v1, first release pending.** Everything below is built, tested in CI, and
+**v1, feature-complete.** Everything below is built, tested in CI, and
 described in the docs above:
 
 - the edge topology — indiserver sidecar plus daemon, pinned by node label,
@@ -256,10 +256,12 @@ described in the docs above:
   policy enforcement, node placement, the overlay barrier, migration paths and
   the backup/restore procedure.
 
-Not yet published: the chart itself. The release workflow is in place
-(`.github/workflows/release.yml`); pushing `chart-v0.1.0` packages the chart,
-pushes it to `oci://ghcr.io/jaxzin/charts`, and records the commit SHA and the
-three image digests in the release notes.
+CI proves this against upstream's INDI *simulator* driver in disposable
+`kind` clusters, not physical camera hardware or a production cluster. Treat
+that gap as real until this chart has run on your own camera.
+
+Published versions, exactly what each pins, and whether it is a release
+candidate: [Releases](https://github.com/jaxzin/indi-allsky-helm/releases).
 
 ### Roadmap
 

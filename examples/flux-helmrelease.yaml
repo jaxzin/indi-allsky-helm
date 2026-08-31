@@ -28,25 +28,24 @@ spec:
   chart:
     spec:
       chart: indi-allsky
-      # A chart version, not the git tag: the release `chart-v0.1.0` publishes
-      # chart version 0.1.0. Pinned exactly — a `0.1.x` range would let a patch
-      # release land without a reviewed diff.
-      version: "0.1.0"
+      # A chart version, not the git tag: release `chart-v<version>` publishes
+      # chart version `<version>` (same string, without the `chart-v`
+      # prefix). Pinned exactly — a range like `0.1.x` would let a patch
+      # release land without a reviewed diff. Current version:
+      # https://github.com/jaxzin/indi-allsky-helm/releases
+      version: "0.1.0-rc.1"
       sourceRef:
         kind: HelmRepository
         name: indi-allsky
         namespace: flux-system
   values:
-    image:
-      # The production path. Each chart version's release notes publish the
-      # three digests it was tested against. Left empty, the chart resolves
-      # mutable tags under pullPolicy IfNotPresent, so a node that cached the
-      # tag earlier can run different code than one pulling it fresh.
-      # CHANGE ME — copy from the release notes for the version pinned above.
-      digests:
-        indiserver: ""
-        daemon: ""
-        web: ""
+    # image.digests are deliberately NOT set here. The published OCI chart
+    # already defaults to the exact digests it was released with — that is
+    # baked into the package itself, not something you opt into — so setting
+    # image.digests here (even to the same values) is redundant, and setting
+    # any of them to "" would override that safe default with a mutable-tag
+    # fallback instead. Leave this block out; only add it if you need to pin
+    # to digests OTHER than what this chart version shipped with.
 
     # Bring your own Secret with INDIALLSKY_FLASK_SECRET_KEY,
     # INDIALLSKY_FLASK_PASSWORD_KEY and MARIADB_PASSWORD. Losing the Fernet

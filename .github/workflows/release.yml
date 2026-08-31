@@ -58,10 +58,21 @@ jobs:
             exit 1
           fi
 
-          echo "chart ${version}, upstream ${upstream_tag}, commit ${GITHUB_SHA}"
+          # SemVer 2.0.0 §9: a hyphen introduces the pre-release identifier
+          # (1.0.0-alpha, 0.1.0-rc.1, ...). GitHub's own "pre-release" flag
+          # exists for exactly this signal, so derive it from the version
+          # already validated above rather than typing it in by hand at tag
+          # time, where it could silently disagree with what was tagged.
+          case "$version" in
+            *-*) is_prerelease=true ;;
+            *) is_prerelease=false ;;
+          esac
+
+          echo "chart ${version}, upstream ${upstream_tag}, commit ${GITHUB_SHA}, prerelease ${is_prerelease}"
           {
             echo "version=${version}"
             echo "upstream_tag=${upstream_tag}"
+            echo "is_prerelease=${is_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -96,6 +107,42 @@ jobs:
             echo "${image}=${digest}" >> "$GITHUB_OUTPUT"
           done
 
+      # Supply-chain defense, not a convenience default: `image.digests.*` is
+      # documented as "the production pinning path" but was, until now, an
+      # opt-in a consumer had to remember to set. Baking the digests just
+      # resolved above into the PACKAGED chart's own values.yaml — never the
+      # tracked repo copy, which stays digest-free for dev/CI use against
+      # `:main` — means every `helm install` of this release defaults to the
+      # exact SHA-pinned manifests it was tested against, tag drift and
+      # `IfNotPresent` cache divergence included, with no `--set` required.
+      # The checkout is a disposable runner workspace, so mutating it in
+      # place before packaging is safe: nothing here is ever committed back.
+      - name: Bake resolved digests into the packaged chart's defaults
+        env:
+          INDISERVER_DIGEST: ${{ steps.digests.outputs.indiserver }}
+          DAEMON_DIGEST: ${{ steps.digests.outputs.daemon }}
+          WEB_DIGEST: ${{ steps.digests.outputs.web }}
+        run: |
+          set -euo pipefail
+          values="charts/indi-allsky/values.yaml"
+          yq -i "
+            .image.digests.indiserver = strenv(INDISERVER_DIGEST) |
+            .image.digests.daemon = strenv(DAEMON_DIGEST) |
+            .image.digests.web = strenv(WEB_DIGEST)
+          " "$values"
+          for image in indiserver daemon web; do
+            digest="$(yq -r ".image.digests.${image}" "$values")"
+            case "$digest" in
+              sha256:*) ;;
+              *)
+                echo "::error::baked ${values} .image.digests.${image} is not a digest (got '${digest}')"
+                exit 1
+                ;;
+            esac
+          done
+          echo "Packaged chart will default to digest-pinned images:"
+          yq '.image.digests' "$values"
+
       # `helm registry login` keeps its own credential store, separate from the
       # docker login above, so both are needed. --password-stdin keeps the token
       # out of the process table.
@@ -112,10 +159,17 @@ jobs:
 
       # Prove the artifact is consumable the way the README tells operators to
       # consume it, rather than trusting that a successful push implies a
-      # working pull.
-      - name: Verify the published chart is pullable
+      # working pull — AND prove the digest-baking above actually reached the
+      # published artifact, not just the local package step. A published
+      # chart whose own defaults still point at mutable tags is exactly the
+      # supply-chain gap this release process exists to close, so this is a
+      # release-blocking assertion, not an informational check.
+      - name: Verify the published chart is pullable and digest-pinned
         env:
           VERSION: ${{ steps.pin.outputs.version }}
+          INDISERVER_DIGEST: ${{ steps.digests.outputs.indiserver }}
+          DAEMON_DIGEST: ${{ steps.digests.outputs.daemon }}
+          WEB_DIGEST: ${{ steps.digests.outputs.web }}
         run: |
           set -euo pipefail
           work="$(mktemp -d)"
@@ -123,6 +177,18 @@ jobs:
             --version "$VERSION" --destination "$work"
           test -s "${work}/indi-allsky-${VERSION}.tgz"
           helm show chart "${work}/indi-allsky-${VERSION}.tgz"
+
+          pulled_values="$(helm show values "${work}/indi-allsky-${VERSION}.tgz")"
+          for pair in "indiserver=$INDISERVER_DIGEST" "daemon=$DAEMON_DIGEST" "web=$WEB_DIGEST"; do
+            image="${pair%%=*}"
+            expected="${pair#*=}"
+            actual="$(echo "$pulled_values" | yq -r ".image.digests.${image}")"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::published chart's image.digests.${image} is '${actual}', expected '${expected}' — the release does not default to what it claims to pin"
+              exit 1
+            fi
+          done
+          echo "Published chart defaults to the resolved digests for all three images"
 
       # The template is a quoted heredoc so its backticks and ${...} stay
       # literal markdown; the release facts are substituted afterwards. Every
@@ -150,6 +216,15 @@ jobs:
           and read [`docs/host-prep.md`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/docs/host-prep.md)
           before pointing this at real hardware.
 
+          **What "tested" means for this release.** The CI e2e suite installs
+          this chart on real Kubernetes clusters and proves the full pipeline —
+          NetworkPolicy enforcement, migration/backup lock serialization, the
+          overlay checksum barrier, database restore — end to end. It does this
+          against upstream's INDI *simulator* driver in disposable `kind`
+          clusters, not against physical camera hardware or a production
+          cluster. Treat that gap as real until this chart has run on your own
+          camera.
+
           ## What this release pins
 
           | | |
@@ -158,11 +233,19 @@ jobs:
           | Chart commit | [`@COMMIT@`](https://github.com/jaxzin/indi-allsky-helm/commit/@COMMIT@) |
           | Upstream indi-allsky | [`@UPSTREAM_TAG@`](https://github.com/aaronwmorris/indi-allsky/releases/tag/@UPSTREAM_TAG@) |
 
-          ## Image digests — the production pinning path
+          ## Image digests — pinned by default in this release
 
-          These are the exact multi-arch manifests this chart version was
-          resolved against, read out of the registry by the release workflow.
-          Copy them into your values:
+          The published OCI chart (`helm install` command above) already
+          defaults to the exact multi-arch manifests below — resolved out of
+          the registry by the release workflow and baked into the published
+          package's own values, not left for you to `--set`. This is the
+          supply-chain protection `image.digests.*` exists for: without it,
+          `image.pullPolicy: IfNotPresent` means a node that already cached
+          `@UPSTREAM_TAG@` keeps what it cached, while a node pulling for the
+          first time gets whatever that mutable tag points at today — two
+          nodes in one cluster silently running different code under one
+          release. The OCI package removes that by construction; you do not
+          need to do anything for it.
 
           ```yaml
           image:
@@ -172,23 +255,26 @@ jobs:
               web: "@WEB_DIGEST@"
           ```
 
-          **Digest pinning is the intended production path.** With
-          `image.digests.*` left empty the chart resolves each image by the
-          mutable tag `@UPSTREAM_TAG@`, and `image.pullPolicy` defaults to
-          `IfNotPresent`: a node that already cached that tag keeps what it
-          cached, while a node pulling for the first time gets whatever the tag
-          points at today. Two nodes in one cluster can then run different code
-          under one release, silently. Digests remove that.
+          **Consuming the chart from `git` at this commit does not get this
+          for free.** The tracked `charts/indi-allsky/values.yaml` stays
+          digest-free on purpose, so `main` keeps resolving `:main` for
+          day-to-day development — the baking above happens only in the
+          release workflow's disposable checkout, never committed. If you
+          install from git rather than the OCI chart, copy the block above
+          into your own values explicitly.
 
           ## Consuming this release
 
-          - **Operators** install the OCI chart above.
+          - **Operators** install the OCI chart above — digest-pinned by
+            default, nothing further to set.
           - **GitOps** — see
             [`examples/argocd-application.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/argocd-application.yaml)
             and
-            [`examples/flux-helmrelease.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/flux-helmrelease.yaml).
+            [`examples/flux-helmrelease.yaml`](https://github.com/jaxzin/indi-allsky-helm/blob/@TAG@/examples/flux-helmrelease.yaml)
+            (both install the OCI chart, so both get the default above).
           - **Anyone consuming the chart from git** pins `charts/indi-allsky`
-            at commit `@COMMIT@`, not at a branch.
+            at commit `@COMMIT@`, not at a branch — and sets the digest block
+            above explicitly, per the note.
 
           ## Before production
 
@@ -237,3 +323,4 @@ jobs:
         with:
           body_path: release-notes.md
           generate_release_notes: true
+          prerelease: ${{ steps.pin.outputs.is_prerelease }}
