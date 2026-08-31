@@ -2,14 +2,23 @@
 # The edge pod's exact-overlay startup barrier, exercised as a state matrix
 # against the REAL edge Deployment.
 #
-# charts/indi-allsky/tests/db-maintenance-behavior.sh already runs
-# wait-overlay.sh against files in a throwaway container and proves it
-# classifies each sentinel state. What that cannot show is that the chart wires
-# the script into an initContainer with the right environment and the right
-# read-only mount, so that a sentinel state actually holds capture back inside
-# a Kubernetes pod lifecycle. This does: for each state the edge pod is
-# restarted and the initContainer is observed still blocking, with the
-# diagnostic naming that specific state.
+# charts/indi-allsky/tests/db-maintenance-behavior.sh runs wait-overlay.sh
+# against files in a throwaway container and covers its byte handling —
+# missing, empty, malformed including the two-trailing-newline form, stale, and
+# an exact match. What that cannot show is that the chart wires the script into
+# an initContainer with the right environment and the right read-only mount, so
+# that a sentinel state actually holds capture back inside a Kubernetes pod
+# lifecycle. This does: for each state the edge pod is restarted and the
+# initContainer is observed still blocking, with the diagnostic naming that
+# specific state.
+#
+# `unreadable` is covered ONLY here, and only in-cluster. It is the one state
+# that is about the filesystem rather than about bytes: the sentinel holds the
+# exactly correct checksum and is denied by its mode alone. The pod is what
+# makes that reachable — the workbench owns the file as uid 10001, the edge
+# initContainer reads it as the same uid with every capability dropped, and
+# fsGroupChangePolicy: OnRootMismatch means the kubelet does not chmod it back
+# on the way in.
 #
 # Deliberately kept separate from the advisory-lock scenario. The barrier and
 # the lock are different mechanisms with different failure modes, and a single
@@ -60,17 +69,28 @@ trap cleanup EXIT INT TERM HUP
 # it is written from the workbench, which mounts the claim root. `printf %b`
 # keeps the exact byte content — including whether there is a trailing newline,
 # which is the whole difference between "match" and "malformed".
-write_sentinel() {  # $1 = printf %b body, or the literal ABSENT
+write_sentinel() {  # $1 = printf %b body, ABSENT, or UNREADABLE; $2 = body for UNREADABLE
     workbench_sh '
         sentinel="$INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL"
         mkdir -p -- "$(dirname "$sentinel")"
+        # The unreadable case leaves behind a file this uid owns but cannot
+        # open, so every later write has to restore its own access first.
+        # chmod needs ownership, not read or write permission.
+        if [ -e "$sentinel" ]; then
+            chmod 0600 -- "$sentinel"
+        fi
         if [ "$1" = ABSENT ]; then
             rm -f -- "$sentinel"
+        elif [ "$1" = UNREADABLE ]; then
+            # Content that WOULD pass, denied by mode alone. That is the whole
+            # point of the state: nothing about these bytes is wrong.
+            printf "%s\n" "$2" > "$sentinel"
+            chmod 0000 -- "$sentinel"
         else
             printf "%b" "$1" > "$sentinel"
-            chmod 0600 "$sentinel"
+            chmod 0600 -- "$sentinel"
         fi
-    ' "$1"
+    ' "$1" "${2:-}"
 }
 
 edge_pod_gone() {
@@ -103,12 +123,12 @@ barrier_is_blocking() {  # $1 = expected state word
     [ -z "$terminated" ]
 }
 
-assert_state_blocks() {  # $1 = sentinel body, $2 = expected state word
+assert_state_blocks() {  # $1 = sentinel body, $2 = expected state word, $3 = optional body for UNREADABLE
     section "Sentinel state: $2"
     # Sentinel first, THEN the restart. The other order races: the replacement
     # pod would briefly see the previous, correct sentinel and could pass the
     # gate before the state under test was written.
-    write_sentinel "$1"
+    write_sentinel "$1" "${3:-}"
     restart_edge
     local expected="$2"
     blocking() { barrier_is_blocking "$expected"; }
@@ -124,15 +144,36 @@ assert_state_blocks() {  # $1 = sentinel body, $2 = expected state word
 
 # --- the matrix --------------------------------------------------------------
 #
-# `unreadable` is the one documented state not exercised here: producing it
-# needs a mode or ownership the workbench cannot set on a volume it shares with
-# the pod under test. It is covered against real files by
-# charts/indi-allsky/tests/db-maintenance-behavior.sh, along with the
-# two-trailing-newline form of `malformed`.
+# All five states wait-overlay.sh distinguishes. The two-trailing-newline form
+# of `malformed` is the one variant left to
+# charts/indi-allsky/tests/db-maintenance-behavior.sh, which can drive the
+# script's byte handling far more cheaply than a pod restart per case.
 
 assert_state_blocks ABSENT missing
 assert_state_blocks '' empty
 assert_state_blocks 'not-a-checksum\n' malformed
+assert_state_blocks UNREADABLE unreadable "$EXPECTED_CHECKSUM"
+
+# `unreadable` earns an extra assertion the other states cannot make. Its
+# content is byte-for-byte the checksum this rollout expects, so the ONLY thing
+# holding the gate is the file mode — and restoring just that mode, with no
+# write to the file and no pod restart, must release the still-polling
+# initContainer. That separates "the barrier reads the sentinel" from "the
+# barrier compares the sentinel", and it is also the recovery an operator would
+# perform.
+workbench_sh 'chmod 0600 -- "$INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL"'
+retry_until "the edge Deployment to become available once the sentinel is readable again" \
+    "$BARRIER_RESTORE_ATTEMPTS" "$POLL_DELAY_SECONDS" \
+    k rollout status "deployment/${EDGE_DEPLOYMENT}" --timeout 10s \
+    || {
+        k logs "$(component_pod edge)" --container wait-for-overlay >&2 2>/dev/null || true
+        fail "restoring only the sentinel's file mode did not release the edge startup gate"
+    }
+recovered_mode="$(workbench_sh 'stat -c %a -- "$INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL"' | tr -d '[:space:]')"
+test "$recovered_mode" = "600" \
+    || fail "the recovered sentinel is mode ${recovered_mode}, so the gate was released by something other than the permission fix"
+pass "restoring only the file mode released the gate: the bytes never changed, and the same initContainer recovered without a restart"
+
 assert_state_blocks "${STALE_CHECKSUM}\\n" stale
 
 
@@ -156,5 +197,5 @@ test "$sentinel_bytes" -eq $(( ${#EXPECTED_CHECKSUM} + 1 )) \
     || fail "the sentinel is ${sentinel_bytes} bytes; the contract is 64 checksum characters plus exactly one newline"
 pass "the sentinel is exactly ${sentinel_bytes} bytes: the checksum plus one newline"
 
-printf '\noverlay barrier: missing/empty/malformed/stale=blocked+diagnosed match=released sentinelBytes=%s\n' \
+printf '\noverlay barrier: missing/empty/malformed/unreadable/stale=blocked+diagnosed match=released permissionOnlyRecovery=released sentinelBytes=%s\n' \
     "$sentinel_bytes"
