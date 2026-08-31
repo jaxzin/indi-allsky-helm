@@ -107,11 +107,14 @@ k logs "$edge_pod" --container wait-for-overlay >"${SCRATCH_DIRECTORY}/wait-over
 grep -Fq 'edge startup gate passed' "${SCRATCH_DIRECTORY}/wait-overlay.log" \
     || fail "the edge startup gate did not report passing; the daemon may have started without the barrier"
 
-# The sentinel is on the shared volume; the edge daemon mounts the application
-# subtree only, so this reads it through the same read-only .state mount the
-# barrier itself uses.
-sentinel="$(k exec "$edge_pod" --container daemon -- \
-    bash -c 'cat "$INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL" 2>/dev/null || true' | tr -d '\n')"
+# Read the sentinel itself, not just the gate's verdict. Neither edge container
+# can do this: the daemon mounts only the /var/www/html/allsky application
+# subtree, and the .state sibling holding the sentinel is deliberately outside
+# it — the wait-for-overlay initContainer is the only thing in that pod with a
+# mount reaching it, and it has already exited. The workbench pod mounts the
+# claim root, which is what it exists for.
+workbench_apply
+sentinel="$(workbench_sh 'cat -- "$INDIALLSKY_CONFIG_OVERLAY_APPLIED_SENTINEL"' | tr -d '\n')"
 test "$sentinel" = "$expected_checksum" \
     || fail "the applied-overlay sentinel does not equal the rendered overlay checksum"
 pass "the applied-overlay sentinel matches the rendered overlay checksum exactly"
