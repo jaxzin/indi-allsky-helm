@@ -47,16 +47,19 @@ edge:
 
 ## Camera
 
-Install the camera vendor's udev rules on the node. ZWO and QHY both ship them,
-and they are what gives the USB device node a group (or a permissive mode) that
-a non-root process can open. Without a rule the node is typically
-`root:root 0664` and capture fails with `EACCES` no matter what else is set.
+The camera vendor's udev rule is what gives the USB device node a group — or a
+permissive mode — that a non-root process can open. Without one the node is
+typically `root:root 0664`, and capture fails with `EACCES` no matter what else
+is configured.
 
-- ZWO: `asi.rules` from the ASI SDK, usually installed to
-  `/etc/udev/rules.d/99-asi.rules`.
-- QHY: `85-qhyccd.rules` from the QHY SDK.
-- Upstream's `setup.sh` installs the same rules for a bare-metal install; you
-  need them on the **node**, not in the container.
+Those rules ship with the vendor libraries: `libasi` for ZWO, `libqhy` for QHY,
+both from the INDI repositories, and both installed by upstream's own `setup.sh`
+on a bare-metal host. Install the vendor package on the node, or drop its rule
+file into `/etc/udev/rules.d/` yourself.
+
+**Installing it in the container does nothing.** udev runs on the node and
+creates the device nodes there; the container only sees the result through the
+hostPath mount. A rule that exists only inside the image never runs.
 
 Reload without a reboot:
 
