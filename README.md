@@ -337,10 +337,25 @@ chart, the images or the docs belong here.
 
 ### Releasing
 
-Chart releases are cut by pushing an annotated tag `chart-v<semver>` at the
-commit to publish. `.github/workflows/release.yml` then refuses the tag if it
-disagrees with `Chart.yaml`, resolves the three image digests out of the
-registry, packages and pushes the chart to `oci://ghcr.io/jaxzin/charts`,
-verifies it is pullable, and opens a GitHub Release recording the commit SHA
-and those digests alongside GitHub's generated change list. Nothing about a
-release is typed into a form.
+`scripts/sync-chart-version.sh <version>` is the one command that changes
+this repo's chart version: it writes `<version>` into `Chart.yaml` and
+propagates it to every place that needs a literal pin — the quickstart's
+`--version` flag, both GitOps examples. Review the diff, commit it, then push
+an annotated tag `chart-v<version>` at that commit. CI runs the same script
+in `--check` mode and fails the build if a version was ever hand-edited
+around it.
+
+`.github/workflows/release.yml` then: refuses the tag if it disagrees with
+`Chart.yaml` or if `appVersion` has drifted from `UPSTREAM_VERSION`; marks
+the release a GitHub pre-release automatically when the version carries a
+SemVer pre-release identifier (`-rc.1`, `-beta`, …); resolves the three
+image digests out of the registry and bakes them into the **packaged
+chart's own values** — not left for a consumer to `--set`, so every OCI
+install of the release defaults to the exact SHA-pinned images it was
+tested against; verifies that baking against the local package *before*
+pushing, since a chart published under a version number can never be
+un-published or re-pushed under that same tag; pushes to
+`oci://ghcr.io/jaxzin/charts`; verifies the published artifact is pullable
+and still carries those digests; and opens a GitHub Release recording the
+commit SHA and the digests alongside GitHub's generated change list.
+Nothing about a release is typed into a form.
