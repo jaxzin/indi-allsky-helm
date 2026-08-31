@@ -150,6 +150,22 @@ jobs:
               -skip NodeFeatureRule
           done
 
+      # examples/flux-helmrelease.yaml is a Flux manifest rather than a values
+      # file, so the loop above cannot reach it — but it carries a real embedded
+      # values block, which gets copy-pasted exactly like the others and rots
+      # exactly like the others. Extract and render it for the same reason.
+      # The Argo CD example carries no values of its own: it references
+      # examples/values-zwo-pi.yaml, which the loop above already renders.
+      - name: Render the Flux example's embedded values
+        run: |
+          yq -r 'select(.kind == "HelmRelease") | .spec.values' \
+            examples/flux-helmrelease.yaml > flux-values.yaml
+          test -s flux-values.yaml
+          helm template ci-flux charts/indi-allsky --values flux-values.yaml | \
+            docker run -i ghcr.io/yannh/kubeconform@sha256:6b90a5f23d846140ce0194fe050b1995e546eba938f3a6bf10c039dd5e24588f \
+            -strict -summary -exit-on-error -kubernetes-version 1.26.0 \
+            -skip NodeFeatureRule
+
   # --- end-to-end release gate (Task A9, #8) ---------------------------------
   #
   # Two kind clusters rather than one, split by what each set of scenarios

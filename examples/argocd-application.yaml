@@ -1,0 +1,76 @@
+# Argo CD Application installing the published OCI chart.
+#
+# Two sources: the chart comes from GHCR, and the values file comes from this
+# git repo through a `$values` reference. Swap the second source for YOUR OWN
+# repo once you have copied examples/values-zwo-pi.yaml and edited the values
+# it marks CHANGE ME — the copy here is a worked example, not a config for
+# your site.
+#
+# Needs Argo CD 2.6 or newer for multi-source Applications.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: indi-allsky
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jaxzin/charts
+      chart: indi-allsky
+      # A chart version, not the git tag: the release `chart-v0.1.0` publishes
+      # chart version 0.1.0. Pin it exactly — `0.1.x` would let a patch
+      # release land without a reviewed diff.
+      targetRevision: 0.1.0
+      helm:
+        valueFiles:
+          - $values/examples/values-zwo-pi.yaml
+        # Uncomment and fill in to pin the images by digest — the production
+        # path. Each chart version's release notes publish the three digests it
+        # was tested against. Left unset, the chart resolves mutable tags under
+        # pullPolicy IfNotPresent, and a node that cached the tag earlier can
+        # run different code than one pulling it fresh.
+        values: |
+          # image:
+          #   digests:
+          #     indiserver: sha256:...
+          #     daemon: sha256:...
+          #     web: sha256:...
+    - repoURL: https://github.com/jaxzin/indi-allsky-helm
+      targetRevision: chart-v0.1.0
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: indi-allsky
+  syncPolicy:
+    automated:
+      # Both PVCs carry helm.sh/resource-policy: keep while
+      # storage.retentionPolicy is Retain (the default), so prune does not
+      # take your images and database with it.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+# Single-source alternative: consume the chart straight from git at the release
+# commit, rather than from GHCR. This is the shape for anyone who wants the
+# chart source pinned to an exact revision they can read.
+#
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: indi-allsky
+#   namespace: argocd
+# spec:
+#   project: default
+#   source:
+#     repoURL: https://github.com/jaxzin/indi-allsky-helm
+#     targetRevision: chart-v0.1.0
+#     path: charts/indi-allsky
+#     helm:
+#       valueFiles:
+#         - ../../examples/values-zwo-pi.yaml
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: indi-allsky
+#   syncPolicy:
+#     automated: {prune: true, selfHeal: true}
+#     syncOptions: [CreateNamespace=true]
