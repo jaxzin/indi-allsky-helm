@@ -226,12 +226,17 @@ db_host() {
 # Application-account SQL, run inside the database container. The password is
 # read from the projected Secret file by the container's own shell into
 # MYSQL_PWD, so it never reaches argv, this script, or CI output.
+#
+# --raw matters: batch mode otherwise escapes backslashes on the way out, and
+# at least one value these scenarios read back — the grant pattern the official
+# image records in mysql.db, where the database name's underscore is escaped —
+# would come back doubled and no longer name the same grant.
 db_query() {  # $1 = SQL statement
     k exec "statefulset/$(mariadb_statefulset)" --container mariadb -- \
         bash -c '
             set -Eeuo pipefail
             MYSQL_PWD="$(cat /run/secrets/app/MARIADB_PASSWORD)" \
-            exec mariadb --user="$MARIADB_USER" --batch --skip-column-names \
+            exec mariadb --user="$MARIADB_USER" --batch --raw --skip-column-names \
                 --execute="$1" -- "$MARIADB_DATABASE"
         ' _ "$1"
 }
@@ -245,7 +250,7 @@ db_root_query() {  # $1 = SQL statement
         bash -c '
             set -Eeuo pipefail
             MYSQL_PWD="$(cat /run/secrets/root/MARIADB_ROOT_PASSWORD)" \
-            exec mariadb --user=root --batch --skip-column-names \
+            exec mariadb --user=root --batch --raw --skip-column-names \
                 --execute="$1"
         ' _ "$1"
 }

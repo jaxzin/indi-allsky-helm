@@ -246,22 +246,37 @@ pass "writers quiesced: capture stopped, web stopped, scheduled backups suspende
 database_name="$(k get configmap "$(env_configmap_name)" --output jsonpath='{.data.MARIADB_DATABASE}')"
 database_user="$(k get configmap "$(env_configmap_name)" --output jsonpath='{.data.MARIADB_USER}')"
 
-# A real loss, not a truncate: DROP DATABASE also removes the schema-level
-# grants, which is why re-granting is part of the documented procedure rather
-# than an afterthought.
+# A real loss, not a truncate.
 db_root_query "DROP DATABASE IF EXISTS \`${database_name}\`;" >/dev/null
 db_root_query "CREATE DATABASE \`${database_name}\` CHARACTER SET ${TARGET_CHARSET} COLLATE ${TARGET_COLLATION};" >/dev/null
 
-# Before the grant the application account must NOT be able to use the target.
-# Asserting that makes the grant step a demonstrated requirement rather than a
-# line of prose that might be superfluous.
+recreated_collation="$(db_root_query "SELECT DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '${database_name}';" | tr -d '[:space:]')"
+test "$recreated_collation" = "$TARGET_COLLATION" \
+    || fail "the recreated schema collates as ${recreated_collation}, not the ${TARGET_COLLATION} the chart's connection settings declare"
+
+# MEASURED, not assumed: on MariaDB a database-level grant SURVIVES
+# DROP DATABASE, so simply dropping the schema does not model a target the
+# application account has no rights on. Revoking exactly the grant pattern
+# mysql.db records — the official image escapes the underscore in the database
+# name, so the pattern is not necessarily the literal name — makes the account
+# genuinely unentitled, which is what a freshly built replacement server would
+# look like. Without this the GRANT below would be a silent no-op and its
+# necessity would go unproven.
+granted_pattern="$(db_root_query "SELECT Db FROM mysql.db WHERE User = '${database_user}' LIMIT 1;" | tr -d '[:space:]')"
+if [ -n "$granted_pattern" ]; then
+    note "revoking the surviving database-level grant on pattern '${granted_pattern}'"
+    db_root_query "REVOKE ALL PRIVILEGES ON \`${granted_pattern}\`.* FROM '${database_user}'@'%'; FLUSH PRIVILEGES;" >/dev/null
+else
+    note "no database-level grant survived; the application account is already unentitled"
+fi
+
 if db_query 'SELECT 1;' >/dev/null 2>&1; then
-    fail "the application account could still use ${database_name} before its grants were restored; the prepare-target step is not being exercised"
+    fail "the application account can still use ${database_name} with no database-level grant; the prepare-target step is not being exercised"
 fi
 db_root_query "GRANT ALL PRIVILEGES ON \`${database_name}\`.* TO '${database_user}'@'%'; FLUSH PRIVILEGES;" >/dev/null
 db_query 'SELECT 1;' >/dev/null \
     || fail "the application account still cannot use ${database_name} after the grant was restored"
-pass "target schema recreated with ${TARGET_CHARSET}/${TARGET_COLLATION} and the application grants restored"
+pass "target schema recreated as ${TARGET_CHARSET}/${TARGET_COLLATION}, and the application grants are demonstrably required and restored"
 
 restore_log="${SCRATCH_DIRECTORY}/restore.log"
 workbench_sh '
