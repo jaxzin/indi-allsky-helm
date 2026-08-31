@@ -8,6 +8,8 @@ on:
       # to those alone still has to reach this workflow.
       - "images/**"
       - "e2e/**"
+      # The shipped examples are rendered by the strict matrix below.
+      - "examples/**"
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
       - "UPSTREAM_VERSION"
@@ -19,6 +21,8 @@ on:
       # to those alone still has to reach this workflow.
       - "images/**"
       - "e2e/**"
+      # The shipped examples are rendered by the strict matrix below.
+      - "examples/**"
       - "ct.yaml"
       - ".github/workflows/chart-ci.yml"
       - "UPSTREAM_VERSION"
@@ -120,6 +124,11 @@ jobs:
       # anything noticing. The rule's structure is instead asserted field by
       # field in charts/indi-allsky/tests/extras_test.yaml, with a mutation
       # control proving those assertions bite.
+      #
+      # examples/ is in this matrix too. A shipped example that stops rendering
+      # is worse than no example — it is copy-pasted before it is tested — and
+      # nothing else in CI would notice a values key it still names after a
+      # rename.
       - name: Strict render matrix and kubeconform
         run: |
           for values_file in \
@@ -127,8 +136,12 @@ jobs:
             charts/indi-allsky/ci/backup-values.yaml \
             charts/indi-allsky/ci/external-values.yaml \
             charts/indi-allsky/ci/edge-hostpath-values.yaml \
-            charts/indi-allsky/ci/edge-device-plugin-values.yaml; do
-            mode="$(basename "$values_file" -values.yaml)"
+            charts/indi-allsky/ci/edge-device-plugin-values.yaml \
+            examples/values-zwo-pi.yaml; do
+            # ci/ fixtures are <mode>-values.yaml; examples/ are values-<mode>.yaml.
+            mode="$(basename "$values_file" .yaml)"
+            mode="${mode%-values}"
+            mode="${mode#values-}"
             echo "Rendering ${mode} mode"
             helm template "ci-${mode}" charts/indi-allsky \
               --values "$values_file" | \

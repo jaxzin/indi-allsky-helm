@@ -159,5 +159,11 @@ container can become privileged, and only when you ask for it —
 uid 10001 even then.
 
 Details: [docs/node-contract.md](docs/node-contract.md), alongside the
-[container contract](docs/container-contract.md) and
-[chart configuration](docs/configuration.md).
+[container contract](docs/container-contract.md),
+[chart configuration](docs/configuration.md) and
+[topologies](docs/topologies.md) — sidecar vs external indiserver, NFD camera
+autodiscovery, and the optional MQTT broker.
+
+A worked example of a ZWO camera on a Raspberry Pi, with sensors, NFS storage,
+autodiscovery and the broker, is in
+[examples/values-zwo-pi.yaml](examples/values-zwo-pi.yaml).
