@@ -358,9 +358,20 @@ if [ "${INDIALLSKY_LOCAL_AUTH_ENABLE:-true}" == "true" ] && [ -n "${INDIALLSKY_W
         fi
 
         echo "Seeding admin account ${INDIALLSKY_WEB_USER}"
-        ./misc/usertool.py adduser -u "$INDIALLSKY_WEB_USER" -p "$WEB_PASS" \
-            -f "${INDIALLSKY_WEB_NAME:-Admin}" -e "$WEB_EMAIL" </dev/null
-        ./misc/usertool.py setadmin -u "$INDIALLSKY_WEB_USER" </dev/null
+        # The generated/supplied password (and in principle the username,
+        # name or email) can start with "-": generated_secret()-style
+        # base64url output maps a leading "+" to "-", and nothing about a
+        # user-chosen credential rules a leading "-" out either. Passed as a
+        # separate argument (`-p "$WEB_PASS"`), argparse can read a
+        # dash-leading value as the start of another flag rather than -p's
+        # argument and reject it with "expected one argument" — a real crash
+        # loop this admin-seed step then never recovers from, since the same
+        # bad value is re-derived from the same Secret on every restart.
+        # `--flag=value` is unambiguous regardless of what value looks like,
+        # so every flag on both usertool.py calls below uses that form.
+        ./misc/usertool.py adduser --username="$INDIALLSKY_WEB_USER" --password="$WEB_PASS" \
+            --fullname="${INDIALLSKY_WEB_NAME:-Admin}" --email="$WEB_EMAIL" </dev/null
+        ./misc/usertool.py setadmin --username="$INDIALLSKY_WEB_USER" </dev/null
     else
         echo "${USER_COUNT} accounts already exist; not seeding"
     fi

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Disposable runtime proof for the shared database-maintenance advisory lock
 # (issue #16), the atomic no-clobber dump publication (issue #22), and the edge
-# pod's exact-overlay startup barrier (issue #6).
+# pod's exact-overlay startup barrier (issue #6). Also carries one static
+# source-contract check unrelated to those three, for the admin-seed argv
+# regression in issue #53 — placed here rather than in a fourth bench because
+# it needs no MariaDB and no shipped-script container, only a grep, and this
+# file is where the pattern for that kind of check already lives.
 #
 # These are behaviours, not manifest content: no amount of template assertion
 # can show that two jobs actually serialize, that a collision is refused rather
@@ -113,6 +117,32 @@ grep -Fq 'ln -- "$DUMP_TEMPORARY_FILE" "$final_file"' "$publication_code" \
 # constant is asserted statically and the waiting behaviour dynamically below.
 grep -Fq 'LOCK_ACQUIRE_DEADLINE_SECONDS=300' "${REPOSITORY_DIRECTORY}/images/web/db-maintenance-lock.sh" \
     || fail "the advisory-lock acquisition deadline is not the documented 300s"
+
+# Admin seeding must never pass a credential-shaped value as a separate
+# argparse argument (issue #53): a generated or operator-chosen password
+# starting with "-" (e.g. e2e's generated_secret() base64url alphabet, which
+# maps a leading "+" to "-") makes argparse read `-p VALUE` as VALUE looking
+# like another flag and reject it with "expected one argument" — a crash loop
+# the admin-seed step then never recovers from, since the same bad value is
+# re-derived from the same Secret on every restart. `--flag=value` is
+# unambiguous regardless of what follows the "=", so each assertion below
+# requires the EXACT combined flag+value string: a revert of even one flag
+# on either call to the old separate-argument form makes its assertion fail,
+# with no separate "forbidden pattern" list needed (an earlier draft of this
+# check tried that and matched bash's own `-f`/`-e` file-test operators
+# elsewhere in the file — a false positive on unrelated syntax). Static
+# rather than a live adduser/argparse run: usertool.py's top-level imports
+# need the full application venv this bench's bare MariaDB-based image does
+# not carry, and the regression this guards against is purely about argv
+# shape, not behavior the database could reveal.
+seed_code="${SCRATCH_DIRECTORY}/migrate-critical.code"
+grep -v '^[[:space:]]*#' "${REPOSITORY_DIRECTORY}/images/web/migrate-critical.sh" >"$seed_code"
+grep -Fq 'usertool.py adduser --username="$INDIALLSKY_WEB_USER" --password="$WEB_PASS"' "$seed_code" \
+    || fail "migrate-critical.sh's admin-seed adduser call does not use the argparse-safe --flag=value form"
+grep -Fq -- '--fullname="${INDIALLSKY_WEB_NAME:-Admin}" --email="$WEB_EMAIL"' "$seed_code" \
+    || fail "migrate-critical.sh's admin-seed fullname/email flags are not the argparse-safe --flag=value form"
+grep -Fq 'usertool.py setadmin --username="$INDIALLSKY_WEB_USER"' "$seed_code" \
+    || fail "migrate-critical.sh's setadmin call does not use the argparse-safe --flag=value form"
 
 mounted_scripts=(
     "--volume" "${REPOSITORY_DIRECTORY}/images/shared/validators.sh:/home/allsky/validators.sh:ro"
